@@ -1,0 +1,4 @@
+__pycache__
+.venv
+mac/.build
+mac/build
