@@ -14,6 +14,24 @@ private struct SceneBody: Encodable {
     var media: String
 }
 
+private struct AnalyzeRequest: Encodable {
+    var repo_path: String
+    var scenes: Int
+    var angle: String
+}
+
+struct AnalyzedScene: Codable {
+    var heading: String
+    var text: String
+}
+
+struct AnalyzeResult: Codable {
+    var title: String
+    var subtitle: String
+    var scenes: [AnalyzedScene]
+    var cost_usd: Double
+}
+
 private struct DemoRequest: Encodable {
     var title: String
     var subtitle: String
@@ -46,6 +64,14 @@ struct DemoView: View {
         SceneDraft(text: "Start from a template, wire up your data, and ship — no infrastructure to babysit."),
     ]
 
+    @AppStorage("lastRepoPath") private var repoPath = ""
+    @State private var angle = ""
+    @State private var sceneCount = 4
+    @State private var analysing = false
+    @State private var analyseStage = ""
+    @State private var analyseCost: Double?
+    @State private var pickingRepo = false
+
     @State private var pasting = false
     @State private var pasteBuffer = ""
     @State private var pickingMediaFor: SceneDraft.ID?
@@ -61,6 +87,7 @@ struct DemoView: View {
         HSplitView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    repoCard
                     setup
                     sceneList
                 }
@@ -81,11 +108,72 @@ struct DemoView: View {
             }
             pickingMediaFor = nil
         }
-        .alert("Render failed", isPresented: .init(
+        .fileImporter(isPresented: $pickingRepo, allowedContentTypes: [.folder]) { res in
+            if case .success(let url) = res { repoPath = url.path }
+        }
+        .alert("Something went wrong", isPresented: .init(
             get: { error != nil }, set: { if !$0 { error = nil } })
         ) {
             Button("OK") { error = nil }
         } message: { Text(error ?? "") }
+    }
+
+    // MARK: repo
+
+    private var repoCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("From a repo").font(.title3.bold())
+                Text("Claude Code reads it and drafts the script below")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                TextField("Path to a local repository", text: $repoPath)
+                    .textFieldStyle(.roundedBorder)
+                Button("Choose…") { pickingRepo = true }
+            }
+            TextField("Angle or audience — optional, e.g. developers evaluating local AI tooling",
+                      text: $angle)
+                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 14) {
+                Stepper("\(sceneCount) scenes", value: $sceneCount, in: 2...10).fixedSize()
+                Button { analyse() } label: {
+                    Label(analysing ? "Analysing…" : "Analyse repo",
+                          systemImage: "sparkles.rectangle.stack")
+                }
+                .disabled(analysing || repoPath.trimmingCharacters(in: .whitespaces).isEmpty)
+                if analysing {
+                    ProgressView().controlSize(.small)
+                    Text(analyseStage).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                } else if let analyseCost {
+                    Text(String(format: "drafted · $%.2f", analyseCost))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Text("Read-only — only Read, Grep and Glob are allowed. The draft lands in the fields "
+                 + "below, yours to edit before rendering.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .card()
+    }
+
+    private func analyse() {
+        analysing = true
+        analyseStage = "starting"
+        analyseCost = nil
+        Task {
+            defer { analysing = false }
+            do {
+                let r: AnalyzeResult = try await API.run("/analyze", AnalyzeRequest(
+                    repo_path: repoPath, scenes: sceneCount, angle: angle)) { _, message in
+                        analyseStage = message
+                    }
+                title = r.title
+                subtitle = r.subtitle
+                scenes = r.scenes.map { SceneDraft(text: $0.text, heading: $0.heading) }
+                analyseCost = r.cost_usd
+            } catch { self.error = error.localizedDescription }
+        }
     }
 
     // MARK: setup

@@ -25,19 +25,49 @@ The app launches `server.py` itself and shows engine state in the status bar. Fi
 `demo.mp4` plus the full HyperFrames project next to it, so you can open it in HyperFrames Studio
 (`cd <project> && npx hyperframes preview`) and keep editing by hand.
 
+## From a repo
+
+Point the Demo tab at a local repository and press **Analyse repo**. VoxDemo shells out to the
+Claude Code CLI already installed on this machine (`claude -p`), which reads the repo with its own
+file tools and returns a title, a kicker and N scenes. They land in the fields below for you to
+edit before rendering — nothing is generated until you press Generate.
+
+It is read-only by construction: `--allowedTools Read Grep Glob`, `--disallowedTools Bash Write
+Edit`, and `--permission-prompts none` so anything that would prompt is denied instead. Progress
+shows what it is reading. A 4-scene draft of this repo takes ~30 s and costs ~$0.15 on Sonnet.
+
+Needs the `claude` CLI on PATH and signed in. Override with `VOXDEMO_CLAUDE` (full path) and
+`VOXDEMO_CLAUDE_MODEL` (default `sonnet`).
+
 ## Voices
 
 | | |
 |---|---|
 | **8 presets** | Aria, Nolan, Sable, Kit, Juniper, Atlas, Wren, Rio. These are *voice-design* personas, not recordings: the first time you use one, VoxCPM designs it from its description, and that clip becomes the preset's permanent reference. Same voice on every scene, every session. |
-| **Cloning** | Record with the mic or import a file (5–15 s, clean, single speaker) → saved to the voice library at `~/Library/Application Support/VoxDemo/voices/`. Add the clip's transcript to switch on VoxCPM's Ultimate Cloning (reference + transcript continuation) for the closest match. |
+| **Cloning** | Record with the mic or import a file (5–15 s, clean, single speaker) → saved to the voice library at `~/Library/Application Support/VoxDemo/voices/`. |
 
 Every voice — preset or cloned — speaks through a reference clip, so timbre is stable across
-scenes. Style direction ("cheerful, slightly faster") is available under Advanced.
+scenes. Style direction ("cheerful, slightly faster") is available under Advanced. Presets are
+enrolled in the background as soon as the model loads, so Preview is never a first-use wait.
 
 **The mic:** the app records with `AVAudioRecorder`, not the browser, which is what was broken in
 the Gradio version. macOS asks for microphone access on the first Record. The build is ad-hoc
 signed, so that grant resets each time you rebuild — expect the prompt again.
+
+## Performance
+
+Measured on this M5 Pro (MPS, float32). Generation is ~1.4× real time — a 2.5 s line takes
+~3.8 s — and two things that sounded like features were costing far more than that:
+
+| | |
+|---|---|
+| `denoiser.enhance()` on a 21.7 s reference | **421 s**, on CPU — and VoxCPM runs it *twice* per call (prompt + reference). A single cloned-voice preview was ~14 minutes. |
+| Ultimate Cloning (reference + transcript) | **47 s**, and it returns the prompt read back *plus* the line — 12.2 s of audio for a 2.5 s request. Wrong output, 12× the cost. |
+| Plain reference cloning | **3.8 s**, correct. |
+
+So VoxDemo loads with `load_denoiser=False` and only ever uses reference cloning. Previews now
+land in 3–6 s. If you want denoising back, clean the clip once before importing it — a one-shot
+`ffmpeg -af afftdn` or any editor beats 7 minutes of ZipEnhancer per generation.
 
 ## HyperFrames requirements — all already met on this machine
 
@@ -66,6 +96,7 @@ Optional, not required:
 
 ## How a demo is built
 
+0. Optionally, Claude Code reads a repo and drafts the scenes; you edit them.
 1. Each scene's narration goes through VoxCPM with the voice's reference clip; leading and
    trailing silence is trimmed so the measured length matches the speech.
 2. Scene durations come from those measured lengths, so the timeline can't drift out of sync.
@@ -79,14 +110,16 @@ renders identically.
 ## Checks
 
 ```sh
-python3 demo.py --selfcheck                       # timing math + composition lints clean
-.venv/bin/python server.py --dry-run              # API without loading the model
+python3 demo.py --selfcheck            # timing math + composition lints clean
+swift mac/timer-check.swift            # why the record timer read 0.0s, and that the fix ticks
+.venv/bin/python server.py --dry-run   # API without loading the model
 ```
 
 ## Config
 
 `VOXCPM_MODEL_ID` · `VOXCPM_DEVICE` (`auto|cpu|mps|cuda`) · `VOXDEMO_PORT` (8809) ·
-`VOXDEMO_HOME` · `VOXDEMO_OUTPUT` · `HYPERFRAMES_VERSION`
+`VOXDEMO_HOME` · `VOXDEMO_OUTPUT` · `HYPERFRAMES_VERSION` · `VOXDEMO_CLAUDE` ·
+`VOXDEMO_CLAUDE_MODEL` · `VOXDEMO_ANALYZE_TIMEOUT` (420 s)
 
 ## Misuse
 

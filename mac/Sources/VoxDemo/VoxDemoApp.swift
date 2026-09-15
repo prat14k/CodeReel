@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import SwiftUI
 
 // MARK: - Sidecar
@@ -96,6 +97,7 @@ final class Engine {
         guard let h = health else { return process == nil ? "Engine stopped" : "Starting engine…" }
         if !h.error.isEmpty { return "Model error: \(h.error)" }
         if h.loading { return "Loading VoxCPM2 (~5 GB, first run downloads weights)…" }
+        if !h.warm.isEmpty { return "Ready · preparing preset voice \(h.warm)" }
         return h.ready ? "Ready · \(h.model) · \(h.device)" : "Engine idle"
     }
 }
@@ -106,6 +108,7 @@ struct Health: Codable, Equatable {
     var ready: Bool
     var loading: Bool
     var error: String
+    var warm: String
     var dry_run: Bool
     var model: String
     var device: String
@@ -120,7 +123,6 @@ struct Voice: Codable, Identifiable, Equatable, Hashable {
     var name: String
     var kind: String
     var description: String
-    var transcript: String
     var enrolled: Bool
     var isPreset: Bool { kind == "preset" }
 }
@@ -213,16 +215,25 @@ enum API {
 
 // MARK: - Shared bits
 
-@MainActor
-final class Preview {
-    static let shared = Preview()
-    private var player: AVAudioPlayer?
-    func play(_ path: String) {
-        player?.stop()
-        player = try? AVAudioPlayer(contentsOf: URL(fileURLWithPath: path))
-        player?.play()
+/// Native transport with a scrub bar — AVPlayerView already is one, so don't build one.
+struct AudioPlayerBar: NSViewRepresentable {
+    let url: URL
+    var autoplay = false
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let view = AVPlayerView()
+        view.controlsStyle = .inline
+        view.showsFullScreenToggleButton = false
+        view.player = AVPlayer(url: url)
+        if autoplay { view.player?.play() }
+        return view
     }
-    func stop() { player?.stop() }
+
+    func updateNSView(_ view: AVPlayerView, context: Context) {
+        guard (view.player?.currentItem?.asset as? AVURLAsset)?.url != url else { return }
+        view.player = AVPlayer(url: url)
+        if autoplay { view.player?.play() }
+    }
 }
 
 extension View {

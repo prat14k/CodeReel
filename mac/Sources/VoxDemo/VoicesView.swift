@@ -8,7 +8,7 @@ final class Recorder {
     var isRecording = false
     var elapsed: TimeInterval = 0
     var level: Float = 0
-    var denied = false
+    var problem: String?
     private(set) var url: URL?
 
     private var recorder: AVAudioRecorder?
@@ -19,8 +19,14 @@ final class Recorder {
     }
 
     private func start() async {
-        guard await AVCaptureDevice.requestAccess(for: .audio) else { denied = true; return }
-        denied = false
+        // requestAccess resumes on an arbitrary thread, so everything below hops
+        // to main — a Timer scheduled off-main is never added to a run loop and
+        // silently never fires, which is why the elapsed counter sat at 0.0s.
+        guard await AVCaptureDevice.requestAccess(for: .audio) else {
+            await fail("Microphone access denied. Enable VoxDemo in System Settings > "
+                       + "Privacy & Security > Microphone, then press Record again.")
+            return
+        }
         let out = FileManager.default.temporaryDirectory
             .appendingPathComponent("voxdemo-rec-\(Int(Date().timeIntervalSince1970)).wav")
         let settings: [String: Any] = [
@@ -31,30 +37,52 @@ final class Recorder {
             AVLinearPCMIsFloatKey: false,
             AVLinearPCMIsBigEndianKey: false,
         ]
-        guard let r = try? AVAudioRecorder(url: out, settings: settings) else { return }
+        let r: AVAudioRecorder
+        do {
+            r = try AVAudioRecorder(url: out, settings: settings)
+        } catch {
+            await fail("Could not open the microphone: \(error.localizedDescription)")
+            return
+        }
         r.isMeteringEnabled = true
-        guard r.record() else { return }
-        recorder = r
-        url = out
-        elapsed = 0
-        isRecording = true
-        // Timer fires on the main run loop, so touching state here is safe.
-        ticker = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self, let r = self.recorder else { return }
-            r.updateMeters()
-            self.elapsed = r.currentTime
-            // dB (-160...0) mapped onto a 0...1 bar
-            self.level = max(0, min(1, (r.averagePower(forChannel: 0) + 50) / 50))
+        guard r.record() else {
+            await fail("The microphone refused to start - another app may be holding it.")
+            return
+        }
+        await MainActor.run {
+            problem = nil
+            recorder = r
+            url = out
+            elapsed = 0
+            isRecording = true
+            let tick = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
+                guard let self, let r = self.recorder else { return }
+                r.updateMeters()
+                self.elapsed = r.currentTime
+                // dB (-160...0) mapped onto a 0...1 bar
+                self.level = max(0, min(1, (r.averagePower(forChannel: 0) + 50) / 50))
+            }
+            // .common so the counter keeps running while a menu or scroll is tracking
+            RunLoop.main.add(tick, forMode: .common)
+            ticker = tick
         }
     }
 
     func stop() {
         recorder?.stop()
+        // currentTime reads 0 once stopped — take the real length from the file.
+        if let url, let probe = try? AVAudioPlayer(contentsOf: url) { elapsed = probe.duration }
         recorder = nil
         ticker?.invalidate()
         ticker = nil
         isRecording = false
         level = 0
+    }
+
+    @MainActor
+    private func fail(_ message: String) {
+        problem = message
+        isRecording = false
     }
 
     func discard() {
@@ -72,7 +100,6 @@ struct VoicesView: View {
     @State private var recorder = Recorder()
 
     @State private var newName = ""
-    @State private var transcript = ""
     @State private var importedFile: URL?
     @State private var picking = false
     @State private var busy = false
@@ -80,6 +107,7 @@ struct VoicesView: View {
 
     @State private var sampleText = "This is how I sound. Ready whenever you are."
     @State private var previewing: String?
+    @State private var lastPreview: URL?
 
     private var source: URL? { importedFile ?? recorder.url }
 
@@ -113,6 +141,11 @@ struct VoicesView: View {
             }
             if engine.voices.isEmpty {
                 Text("Waiting for the engine…").foregroundStyle(.secondary)
+            }
+            if let lastPreview {
+                AudioPlayerBar(url: lastPreview, autoplay: true)
+                    .frame(height: 40)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             ForEach(engine.voices) { voice in
                 HStack(spacing: 12) {
@@ -161,7 +194,7 @@ struct VoicesView: View {
                     "/speak",
                     ["voice_id": voice.id, "text": sampleText] as [String: String],
                     onStep: { _, _ in })
-                Preview.shared.play(r.path)
+                lastPreview = URL(fileURLWithPath: r.path)
                 await engine.refreshVoices()
             } catch { self.error = error.localizedDescription }
         }
@@ -210,25 +243,24 @@ struct VoicesView: View {
             }
 
             if let source, !recorder.isRecording {
-                HStack(spacing: 10) {
-                    Image(systemName: "waveform.circle.fill").foregroundStyle(.green)
-                    Text(source.lastPathComponent).lineLimit(1)
-                    if recorder.url != nil && importedFile == nil {
-                        Text(String(format: "%.1fs", recorder.elapsed))
-                            .foregroundStyle(.secondary).monospacedDigit()
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "waveform.circle.fill").foregroundStyle(Color.green)
+                        Text(source.lastPathComponent).lineLimit(1)
+                        if recorder.url != nil && importedFile == nil {
+                            Text(String(format: "%.1fs", recorder.elapsed))
+                                .foregroundStyle(.secondary).monospacedDigit()
+                        }
+                        Spacer()
+                        Button("Clear") { recorder.discard(); importedFile = nil }
+                            .buttonStyle(.borderless)
                     }
-                    Button("Play") { Preview.shared.play(source.path) }
-                        .buttonStyle(.borderless)
-                    Button("Clear") { recorder.discard(); importedFile = nil }
-                        .buttonStyle(.borderless)
+                    .font(.callout)
+                    AudioPlayerBar(url: source)
+                        .frame(height: 40)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .font(.callout)
             }
-
-            TextField("Transcript of the clip (optional — unlocks highest-fidelity cloning)",
-                      text: $transcript, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(2...4)
 
             HStack {
                 Button {
@@ -238,9 +270,8 @@ struct VoicesView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(busy || source == nil || newName.trimmingCharacters(in: .whitespaces).isEmpty)
-                if recorder.denied {
-                    Text("Microphone access denied — enable VoxDemo in System Settings › Privacy & Security › Microphone.")
-                        .font(.caption).foregroundStyle(.red)
+                if let problem = recorder.problem {
+                    Text(problem).font(.caption).foregroundStyle(Color.red)
                 }
             }
         }
@@ -260,11 +291,10 @@ struct VoicesView: View {
             defer { busy = false }
             do {
                 let _: Voice = try await API.post("/voices", [
-                    "name": newName, "source_path": source.path, "transcript": transcript,
+                    "name": newName, "source_path": source.path,
                 ] as [String: String])
                 await engine.refreshVoices()
                 newName = ""
-                transcript = ""
                 recorder.discard()
                 importedFile = nil
             } catch { self.error = error.localizedDescription }

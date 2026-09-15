@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -44,6 +46,12 @@ for d in (VOICES_DIR, CACHE_DIR, OUTPUT_DIR):
 
 # Enrollment line for preset voices: read once per preset, then reused as the
 # cloning reference so a preset sounds identical across scenes and sessions.
+#
+# ponytail: no denoiser and no "ultimate" (transcript-continuation) cloning.
+# Measured on this M5 Pro: ZipEnhancer takes 421s to clean a 21.7s clip and the
+# generate path runs it twice per call; transcript-continuation returns the prompt
+# read back plus the line (12.2s of audio for a 2.5s request) at 12x the cost.
+# Plain reference cloning is 3.8s and correct. See README > Performance.
 ENROLL_TEXT = ("Hello, and welcome. In this short demo I will walk you through the "
                "product, step by step, so you can see exactly how it works.")
 ENROLL_SEED = 20260101
@@ -59,11 +67,120 @@ PRESETS = [
     ("rio", "Rio", "a man with a lively storytelling cadence, warm and expressive"),
 ]
 
+CLAUDE_MODEL = os.environ.get("VOXDEMO_CLAUDE_MODEL", "sonnet")
+ANALYZE_TIMEOUT = int(os.environ.get("VOXDEMO_ANALYZE_TIMEOUT", "420"))
+
+ANALYZE_PROMPT = """You are writing the narration script for a short product-demo \
+video about the software in this repository.
+
+Read enough of the repo to understand what it actually does and who it is for. \
+Start with the README and the entry points.
+
+Then write a {n}-scene script.{angle}
+
+Rules:
+- Scene 1 hooks: what this is and the problem it solves. The last scene closes.
+- Each narration is 1-2 sentences, 12-30 words, written to be SPOKEN ALOUD. No \
+markdown, no bullets, no file paths, and no code identifiers a person would not \
+say out loud.
+- Each heading is 2-6 words and appears on screen.
+- Describe only what the repository really does. Do not invent features.
+
+Reply with ONLY this JSON object, no prose and no code fence:
+{{"title":"<=6 words","subtitle":"2-4 word kicker","scenes":[{{"heading":"...","narration":"..."}}]}}
+"""
+
+
+# ---------------------------------------------------------------- repo analysis
+
+def _claude_bin() -> str:
+    override = os.environ.get("VOXDEMO_CLAUDE")
+    if override:
+        return override
+    path = os.pathsep.join([os.environ.get("PATH", ""), str(Path.home() / ".local" / "bin"),
+                            "/opt/homebrew/bin", "/usr/local/bin"])
+    found = shutil.which("claude", path=path)
+    if not found:
+        raise HTTPException(400, "Claude Code CLI not found. Install it, or set VOXDEMO_CLAUDE "
+                                 "to the full path of the `claude` binary.")
+    return found
+
+
+def _extract_json(text: str) -> dict:
+    """The model was told to emit bare JSON; tolerate a fence or a stray sentence."""
+    body = text.strip()
+    if body.startswith("```"):
+        body = re.sub(r"^```[a-z]*\s*|\s*```$", "", body, flags=re.S)
+    start, end = body.find("{"), body.rfind("}")
+    if start < 0 or end <= start:
+        raise RuntimeError(f"Claude did not return JSON. It said: {text[:300]}")
+    return json.loads(body[start:end + 1])
+
+
+def analyze_repo(repo: Path, n_scenes: int, angle: str, on_tool=None) -> dict:
+    """Ask the local Claude Code CLI to read the repo and draft a demo script.
+
+    Read-only by construction: only Read/Grep/Glob are allowed and anything that
+    would prompt for permission is denied instead.
+    """
+    prompt = ANALYZE_PROMPT.format(
+        n=n_scenes,
+        angle=f"\n\nAngle the script for: {_clean(angle)}" if _clean(angle) else "")
+    cmd = [_claude_bin(), "-p", prompt,
+           "--output-format", "stream-json", "--verbose",
+           "--model", CLAUDE_MODEL,
+           "--permission-prompts", "none",
+           "--allowedTools", "Read", "Grep", "Glob",
+           "--disallowedTools", "Bash", "Write", "Edit"]
+    proc = subprocess.Popen(cmd, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, bufsize=1)
+    deadline = time.time() + ANALYZE_TIMEOUT
+    result = None
+    try:
+        for line in proc.stdout:
+            if time.time() > deadline:
+                proc.kill()
+                raise RuntimeError(f"repo analysis went past {ANALYZE_TIMEOUT}s — stopped it")
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "assistant" and on_tool:
+                for block in event.get("message", {}).get("content", []):
+                    if block.get("type") == "tool_use":
+                        arg = (block.get("input") or {})
+                        label = arg.get("file_path") or arg.get("pattern") or arg.get("path") or ""
+                        on_tool(f"{block['name']} {Path(str(label)).name}".strip())
+            elif event.get("type") == "result":
+                result = event
+    finally:
+        proc.stdout.close()
+        stderr = proc.stderr.read()
+        proc.stderr.close()
+        proc.wait()
+
+    if result is None:
+        raise RuntimeError(f"Claude Code produced no result. {stderr[:400]}")
+    if result.get("is_error") or result.get("subtype") != "success":
+        raise RuntimeError(f"Claude Code failed ({result.get('subtype')}): "
+                           f"{str(result.get('result'))[:300]}")
+
+    data = _extract_json(result.get("result") or "")
+    scenes = [{"heading": _clean(sc.get("heading", "")), "text": _clean(sc.get("narration", ""))}
+              for sc in data.get("scenes", []) if _clean(sc.get("narration", ""))]
+    if not scenes:
+        raise RuntimeError("Claude Code returned no scenes.")
+    return {"title": _clean(data.get("title", "")) or repo.name,
+            "subtitle": _clean(data.get("subtitle", "")),
+            "scenes": scenes,
+            "cost_usd": round(float(result.get("total_cost_usd") or 0), 4)}
+
+
 # ---------------------------------------------------------------- model
 
 model = None
 SAMPLE_RATE = 48000
-_state = {"ready": DRY_RUN, "error": "", "loading": not DRY_RUN}
+_state = {"ready": DRY_RUN, "error": "", "loading": not DRY_RUN, "warm": ""}
 _gpu_lock = threading.Lock()  # VoxCPM inference is serialized
 
 
@@ -72,11 +189,12 @@ def _load_model() -> None:
     try:
         from voxcpm import VoxCPM
         model = VoxCPM.from_pretrained(
-            MODEL_ID, load_denoiser=True,
+            MODEL_ID, load_denoiser=False,
             optimize=(os.environ.get("VOXCPM_OPTIMIZE", "1") == "1"), device=DEVICE)
         SAMPLE_RATE = model.tts_model.sample_rate
         _state.update(ready=True, loading=False)
         print(f"[voxdemo] model ready sample_rate={SAMPLE_RATE}", flush=True)
+        threading.Thread(target=_warm_presets, daemon=True).start()
     except Exception as e:  # surfaced in /health so the app can show it
         _state.update(ready=False, loading=False, error=f"{type(e).__name__}: {e}")
         print(f"[voxdemo] model load failed: {e}", flush=True)
@@ -84,6 +202,22 @@ def _load_model() -> None:
 
 if not DRY_RUN:
     threading.Thread(target=_load_model, daemon=True).start()
+
+
+def _warm_presets() -> None:
+    """Give every preset its reference clip up front, so Preview is never a 13s wait.
+
+    Each enrollment holds _gpu_lock for ~13s, so a user request queues behind at
+    most one of them rather than behind the whole set.
+    """
+    todo = [p for p in PRESETS if not (VOICES_DIR / p[0] / "ref.wav").exists()]
+    for i, (pid, name, _) in enumerate(todo, start=1):
+        _state["warm"] = f"{name} ({i}/{len(todo)})"
+        try:
+            ensure_enrolled(pid)
+        except Exception as e:
+            print(f"[voxdemo] warming {pid} failed: {e}", flush=True)
+    _state["warm"] = ""
 
 
 def _require_model():
@@ -121,25 +255,19 @@ def _write(wav: np.ndarray, path: Path) -> tuple[Path, float]:
     return path, len(wav) / SAMPLE_RATE
 
 
-def _generate(text: str, ref: Path | None, transcript: str, style: str,
-              cfg: float, timesteps: int, seed: int, denoise: bool = False) -> np.ndarray:
+def _generate(text: str, ref: Path | None, style: str,
+              cfg: float, timesteps: int, seed: int) -> np.ndarray:
     import torch
     m = _require_model()
     text = _clean(text)
     if not text:
         raise HTTPException(400, "nothing to say — text is empty")
+    styled = (f"({_clean(style)})" if style else "") + text
     kwargs = dict(cfg_value=float(cfg), inference_timesteps=int(timesteps))
     with _gpu_lock:
         torch.manual_seed(int(seed))
-        if ref and transcript:
-            # Ultimate cloning: reference audio + its transcript, best similarity.
-            wav = m.generate(text=text, prompt_wav_path=str(ref), prompt_text=_clean(transcript),
-                             reference_wav_path=str(ref), denoise=denoise, **kwargs)
-        elif ref:
-            wav = m.generate(text=(f"({_clean(style)})" if style else "") + text,
-                             reference_wav_path=str(ref), denoise=denoise, **kwargs)
-        else:
-            wav = m.generate(text=(f"({_clean(style)})" if style else "") + text, **kwargs)
+        wav = (m.generate(text=styled, reference_wav_path=str(ref), **kwargs) if ref
+               else m.generate(text=styled, **kwargs))
     return _trim_silence(np.asarray(wav), SAMPLE_RATE)
 
 
@@ -165,7 +293,7 @@ def list_voices() -> list[dict]:
     for pid, name, desc in PRESETS:
         stored = _read_voice(_voice_dir(pid))
         out[pid] = stored or {"id": pid, "name": name, "kind": "preset",
-                              "description": desc, "transcript": "", "enrolled": False}
+                              "description": desc, "enrolled": False}
     for d in sorted(VOICES_DIR.iterdir()) if VOICES_DIR.exists() else []:
         v = _read_voice(d) if d.is_dir() else None
         if v:
@@ -190,11 +318,10 @@ def ensure_enrolled(vid: str) -> dict:
     if not preset:
         raise HTTPException(404, f"voice {vid!r} not found")
     _, name, desc = preset
-    wav = _generate(ENROLL_TEXT, None, "", desc, cfg=2.0, timesteps=16, seed=ENROLL_SEED)
+    wav = _generate(ENROLL_TEXT, None, desc, cfg=2.0, timesteps=12, seed=ENROLL_SEED)
     d.mkdir(parents=True, exist_ok=True)
     _write(wav, d / "ref.wav")
     return _save_voice({"id": vid, "name": name, "kind": "preset", "description": desc,
-                        "transcript": ENROLL_TEXT,
                         "created": datetime.now(timezone.utc).isoformat(timespec="seconds")})
 
 
@@ -206,7 +333,8 @@ def _slug(text: str, fallback: str = "voice") -> str:
 # ---------------------------------------------------------------- jobs
 
 JOBS: dict[str, dict] = {}
-_pool = ThreadPoolExecutor(max_workers=1)  # one generation at a time
+_pool = ThreadPoolExecutor(max_workers=1)      # one generation at a time
+_cpu_pool = ThreadPoolExecutor(max_workers=2)  # repo analysis: no model, no queueing behind it
 
 
 def _job(kind: str) -> str:
@@ -224,7 +352,7 @@ def _step(jid: str, progress: float, message: str) -> None:
     print(f"[voxdemo] {jid} {j['progress']:.0%} {message}", flush=True)
 
 
-def _run(jid: str, fn) -> None:
+def _run(jid: str, fn, pool: ThreadPoolExecutor | None = None) -> None:
     def wrapped():
         try:
             JOBS[jid]["result"] = fn(jid)
@@ -233,7 +361,7 @@ def _run(jid: str, fn) -> None:
             msg = str(getattr(e, "detail", None) or e)
             JOBS[jid].update(state="error", error=msg, message=msg[:400])
             print(f"[voxdemo] {jid} failed: {e}", flush=True)
-    _pool.submit(wrapped)
+    (pool or _pool).submit(wrapped)
 
 
 # ---------------------------------------------------------------- api
@@ -244,8 +372,6 @@ app = FastAPI(title="VoxDemo")
 class CloneReq(BaseModel):
     name: str
     source_path: str
-    transcript: str = ""
-    denoise: bool = True
 
 
 class SpeakReq(BaseModel):
@@ -255,6 +381,12 @@ class SpeakReq(BaseModel):
     cfg: float = 2.0
     timesteps: int = 12
     seed: int = 42
+
+
+class AnalyzeReq(BaseModel):
+    repo_path: str
+    scenes: int = 4
+    angle: str = ""
 
 
 class SceneIn(BaseModel):
@@ -280,6 +412,7 @@ class DemoReq(BaseModel):
 @app.get("/health")
 def health():
     return {"ready": _state["ready"], "loading": _state["loading"], "error": _state["error"],
+            "warm": _state["warm"],
             "dry_run": DRY_RUN, "model": MODEL_ID, "device": DEVICE,
             "sample_rate": SAMPLE_RATE, "output_dir": str(OUTPUT_DIR),
             "themes": list(demolib.THEMES), "aspects": list(demolib.ASPECTS)}
@@ -316,7 +449,6 @@ def clone_voice(req: CloneReq):
     sf.write(str(d / "ref.wav"), wav, sr)
     return _save_voice({"id": vid, "name": name, "kind": "clone",
                         "description": f"cloned from {src.name} ({info.duration:.1f}s)",
-                        "transcript": _clean(req.transcript), "denoise": bool(req.denoise),
                         "created": datetime.now(timezone.utc).isoformat(timespec="seconds")})
 
 
@@ -340,13 +472,38 @@ def speak(req: SpeakReq):
             ensure_enrolled(req.voice_id)
         v = _read_voice(_voice_dir(req.voice_id)) or {"name": req.voice_id}
         ref = _voice_dir(req.voice_id) / "ref.wav"
+        if _state["warm"]:
+            _step(jid, 0.2, f"waiting for preset warm-up ({_state['warm']})")
         _step(jid, 0.35, f"speaking as {v['name']}")
-        wav = _generate(req.text, ref, v.get("transcript", ""), req.style,
-                        req.cfg, req.timesteps, req.seed, v.get("denoise", False))
+        wav = _generate(req.text, ref, req.style, req.cfg, req.timesteps, req.seed)
         path, dur = _write(wav, CACHE_DIR / f"speak_{jid}.wav")
         return {"path": str(path), "duration": round(dur, 2), "voice": v["name"]}
 
     _run(jid, work)
+    return {"job_id": jid}
+
+
+@app.post("/analyze")
+def analyze(req: AnalyzeReq):
+    repo = Path(req.repo_path).expanduser()
+    if not repo.is_dir():
+        raise HTTPException(400, f"not a folder: {repo}")
+    n = max(2, min(int(req.scenes), 10))
+    jid = _job("analyze")
+
+    def work(jid):
+        _step(jid, 0.05, "starting Claude Code")
+        reads = [0]
+
+        def on_tool(label: str):
+            reads[0] += 1
+            _step(jid, min(0.10 + 0.05 * reads[0], 0.85), f"reading the repo — {label}")
+
+        out = analyze_repo(repo, n, req.angle, on_tool)
+        _step(jid, 0.95, "drafting the script")
+        return out
+
+    _run(jid, work, pool=_cpu_pool)
     return {"job_id": jid}
 
 
@@ -373,8 +530,7 @@ def create_demo(req: DemoReq):
         scenes, n = [], len(scenes_in)
         for i, s in enumerate(scenes_in, start=1):
             _step(jid, 0.05 + 0.65 * (i - 1) / n, f"narrating scene {i} of {n}")
-            wav = _generate(s.text, ref, v.get("transcript", ""), req.style,
-                            req.cfg, req.timesteps, req.seed + i, v.get("denoise", False))
+            wav = _generate(s.text, ref, req.style, req.cfg, req.timesteps, req.seed + i)
             path, dur = _write(wav, CACHE_DIR / jid / f"scene{i}.wav")
             media = str(Path(s.media).expanduser()) if _clean(s.media) else ""
             if media and not Path(media).is_file():
