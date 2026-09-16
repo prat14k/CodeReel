@@ -70,25 +70,48 @@ PRESETS = [
 CLAUDE_MODEL = os.environ.get("VOXDEMO_CLAUDE_MODEL", "sonnet")
 ANALYZE_TIMEOUT = int(os.environ.get("VOXDEMO_ANALYZE_TIMEOUT", "420"))
 
-ANALYZE_PROMPT = """You are writing the narration script for a short product-demo \
-video about the software in this repository.
+ANALYZE_PROMPT = """You are writing the narration script for a short demo video that \
+introduces the app in this repository to someone who has never seen it.
 
-Read enough of the repo to understand what it actually does and who it is for. \
-Start with the README and the entry points.
+Read enough of the repo to understand it for real — README, entry points, the main \
+source files, any docs. Do not skim one file and guess.
 
-Then write a {n}-scene script.{angle}
+The script must land these beats, in this order. Aim for about {n} scenes, but the \
+beats win: never drop one to hit the number, and never pad with filler to reach it.
+1. WHO IT IS FOR — name the actual audience, concretely.
+2. THE PROBLEM — the pain that audience hits today, in their words, not abstractions.
+3. THE SOLUTION — what this app is, and briefly HOW it solves that problem.
+4. STANDOUT FEATURES — one scene per genuinely notable capability. Only real ones; \
+if the app has none worth calling out, spend the scenes on the solution instead.
+5. THE CLOSE — what it costs, how to get it, or the payoff of using it.
+{angle}
+Give every scene a short `role` label that will be shown on screen, 1-3 words, \
+such as "Who it's for", "The problem", "How it works", "Feature", or "Get it".
 
-Rules:
-- Scene 1 hooks: what this is and the problem it solves. The last scene closes.
+Also find, if and only if they genuinely exist in this repo:
+- `logo`: the app's OWN icon or logo image. Repo-relative path. It must belong to \
+this app — never a third-party or vendor logo, never an icon of some other product \
+the app merely integrates with, and never anything under a build output directory. \
+If the app ships no logo of its own, return "".
+- `screenshot` per scene: a real screenshot or demo image OF THIS APP that fits that \
+scene. Repo-relative path, or "" when there is none. Never invent a path.
+
+Writing rules:
 - Each narration is 1-2 sentences, 12-30 words, written to be SPOKEN ALOUD. No \
-markdown, no bullets, no file paths, and no code identifiers a person would not \
-say out loud.
+markdown, no bullets, no file paths, and no code identifiers a person would not say.
+- Speak to the viewer as "you". Make it warm and concrete, not a feature list read out.
 - Each heading is 2-6 words and appears on screen.
-- Describe only what the repository really does. Do not invent features.
+- Never invent features, numbers, prices, or platforms. Everything must be in the repo.
 
 Reply with ONLY this JSON object, no prose and no code fence:
-{{"title":"<=6 words","subtitle":"2-4 word kicker","scenes":[{{"heading":"...","narration":"..."}}]}}
+{{"title":"<=6 words, the app's name","audience":"2-6 words naming who it is for",\
+"logo":"repo-relative path or empty string","scenes":[{{"role":"1-3 words",\
+"heading":"2-6 words","narration":"...","screenshot":"repo-relative path or empty string"}}]}}
 """
+
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".icns"}
+BUILD_DIRS = {".build", "build", "node_modules", ".git", "dist", "out", "target",
+              "DerivedData", ".venv", "Pods", "vendor", "__pycache__"}
 
 
 # ---------------------------------------------------------------- repo analysis
@@ -104,6 +127,29 @@ def _claude_bin() -> str:
         raise HTTPException(400, "Claude Code CLI not found. Install it, or set VOXDEMO_CLAUDE "
                                  "to the full path of the `claude` binary.")
     return found
+
+
+def _repo_asset(repo: Path, rel: str) -> str:
+    """Resolve a model-supplied image path, or return "" — never trust it blindly."""
+    rel = (rel or "").strip().lstrip("/")
+    if not rel:
+        return ""
+    root = repo.resolve()
+    try:
+        full = (root / rel).resolve()
+        parts = full.relative_to(root).parts
+    except (ValueError, OSError):
+        return ""  # escaped the repo, or unreadable
+    if not full.is_file() or full.suffix.lower() not in IMAGE_EXT:
+        return ""
+    if BUILD_DIRS.intersection(parts):
+        return ""  # build output is not the app's branding
+    if full.suffix.lower() == ".icns":
+        png = CACHE_DIR / f"logo_{abs(hash(str(full))) % 10**10}.png"
+        subprocess.run(["sips", "-s", "format", "png", str(full), "--out", str(png)],
+                       capture_output=True)
+        return str(png) if png.exists() else ""
+    return str(full)
 
 
 def _extract_json(text: str) -> dict:
@@ -166,12 +212,16 @@ def analyze_repo(repo: Path, n_scenes: int, angle: str, on_tool=None) -> dict:
                            f"{str(result.get('result'))[:300]}")
 
     data = _extract_json(result.get("result") or "")
-    scenes = [{"heading": _clean(sc.get("heading", "")), "text": _clean(sc.get("narration", ""))}
+    scenes = [{"heading": _clean(sc.get("heading", "")),
+               "role": _clean(sc.get("role", "")),
+               "media": _repo_asset(repo, sc.get("screenshot", "")),
+               "text": _clean(sc.get("narration", ""))}
               for sc in data.get("scenes", []) if _clean(sc.get("narration", ""))]
     if not scenes:
         raise RuntimeError("Claude Code returned no scenes.")
     return {"title": _clean(data.get("title", "")) or repo.name,
-            "subtitle": _clean(data.get("subtitle", "")),
+            "subtitle": _clean(data.get("audience", "")),
+            "logo": _repo_asset(repo, data.get("logo", "")),
             "scenes": scenes,
             "cost_usd": round(float(result.get("total_cost_usd") or 0), 4)}
 
@@ -392,12 +442,14 @@ class AnalyzeReq(BaseModel):
 class SceneIn(BaseModel):
     text: str
     heading: str = ""
+    role: str = ""
     media: str = ""
 
 
 class DemoReq(BaseModel):
     title: str
     subtitle: str = ""
+    logo: str = ""
     voice_id: str
     script: str = ""
     scenes: list[SceneIn] = []
@@ -536,10 +588,15 @@ def create_demo(req: DemoReq):
             if media and not Path(media).is_file():
                 raise HTTPException(400, f"scene {i} media not found: {media}")
             scenes.append(demolib.Scene(text=_clean(s.text), heading=_clean(s.heading),
-                                        media=media, audio=str(path), duration=dur))
+                                        role=_clean(s.role), media=media,
+                                        audio=str(path), duration=dur))
 
         _step(jid, 0.72, "building composition")
-        demolib.write_project(proj, title, _clean(req.subtitle), scenes, req.theme, req.aspect)
+        logo = str(Path(req.logo).expanduser()) if _clean(req.logo) else ""
+        if logo and not Path(logo).is_file():
+            raise HTTPException(400, f"logo not found: {logo}")
+        demolib.write_project(proj, title, _clean(req.subtitle), scenes,
+                              req.theme, req.aspect, logo=logo)
         errors = demolib.lint(proj)
         if errors:
             raise RuntimeError("composition failed lint: " +

@@ -29,8 +29,19 @@ The app launches `server.py` itself and shows engine state in the status bar. Fi
 
 Point the Demo tab at a local repository and press **Analyse repo**. VoxDemo shells out to the
 Claude Code CLI already installed on this machine (`claude -p`), which reads the repo with its own
-file tools and returns a title, a kicker and N scenes. They land in the fields below for you to
-edit before rendering — nothing is generated until you press Generate.
+file tools and drafts a script that follows a pitch, not a feature dump:
+
+**who it's for → the problem they hit → what this is and how it fixes it → standout features →
+the close.** Each scene carries that beat as an on-screen label, and the audience line becomes the
+title card's kicker.
+
+It also hunts for the app's **own** logo and any real screenshots, and attaches them — a repo with
+no assets of its own gets a monogram wordmark instead, so the video is still branded. Vendor icons
+of products the app merely integrates with are rejected, as is anything under a build directory.
+
+Everything lands in the fields below for you to edit — nothing is generated until you press
+Generate, and the app ships no placeholder script to delete first. The scene count is a target,
+not a quota: the beats win.
 
 It is read-only by construction: `--allowedTools Read Grep Glob`, `--disallowedTools Bash Write
 Edit`, and `--permission-prompts none` so anything that would prompt is denied instead. Progress
@@ -100,7 +111,8 @@ Optional, not required:
 1. Each scene's narration goes through VoxCPM with the voice's reference clip; leading and
    trailing silence is trimmed so the measured length matches the speech.
 2. Scene durations come from those measured lengths, so the timeline can't drift out of sync.
-3. `demo.py` emits one `index.html` — title card, per-scene `<audio>`, headings, optional
+3. `demo.py` emits one `index.html` — branded title card (logo or monogram), a wordmark that
+   rides the whole video, a progress bar, per-scene `<audio>`, role label + heading, optional
    full-bleed screenshot or clip, timed caption chunks, GSAP entrances.
 4. `hyperframes lint --json` gates it, then `hyperframes render` produces the MP4.
 

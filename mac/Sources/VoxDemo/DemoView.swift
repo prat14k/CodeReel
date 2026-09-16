@@ -5,12 +5,14 @@ struct SceneDraft: Identifiable, Equatable {
     let id = UUID()
     var text = ""
     var heading = ""
+    var role = ""
     var media = ""
 }
 
 private struct SceneBody: Encodable {
     var text: String
     var heading: String
+    var role: String
     var media: String
 }
 
@@ -22,12 +24,15 @@ private struct AnalyzeRequest: Encodable {
 
 struct AnalyzedScene: Codable {
     var heading: String
+    var role: String
+    var media: String
     var text: String
 }
 
 struct AnalyzeResult: Codable {
     var title: String
     var subtitle: String
+    var logo: String
     var scenes: [AnalyzedScene]
     var cost_usd: Double
 }
@@ -35,6 +40,7 @@ struct AnalyzeResult: Codable {
 private struct DemoRequest: Encodable {
     var title: String
     var subtitle: String
+    var logo: String
     var voice_id: String
     var scenes: [SceneBody]
     var theme: String
@@ -48,8 +54,9 @@ private struct DemoRequest: Encodable {
 struct DemoView: View {
     @Environment(Engine.self) private var engine
 
-    @State private var title = "Ship faster with Acme"
-    @State private var subtitle = "Product demo"
+    @State private var title = ""
+    @State private var subtitle = ""
+    @State private var logo = ""
     @State private var voiceID = "aria"
     @State private var theme = "midnight"
     @State private var aspect = "landscape"
@@ -59,14 +66,12 @@ struct DemoView: View {
     @State private var seed = 42
     @State private var showAdvanced = false
 
-    @State private var scenes: [SceneDraft] = [
-        SceneDraft(text: "Acme turns a rough idea into a working prototype in an afternoon."),
-        SceneDraft(text: "Start from a template, wire up your data, and ship — no infrastructure to babysit."),
-    ]
+    @State private var scenes: [SceneDraft] = [SceneDraft()]
+    @State private var pickingLogo = false
 
     @AppStorage("lastRepoPath") private var repoPath = ""
     @State private var angle = ""
-    @State private var sceneCount = 4
+    @State private var sceneCount = 6
     @State private var analysing = false
     @State private var analyseStage = ""
     @State private var analyseCost: Double?
@@ -111,6 +116,9 @@ struct DemoView: View {
         .fileImporter(isPresented: $pickingRepo, allowedContentTypes: [.folder]) { res in
             if case .success(let url) = res { repoPath = url.path }
         }
+        .fileImporter(isPresented: $pickingLogo, allowedContentTypes: [.image]) { res in
+            if case .success(let url) = res { logo = url.path }
+        }
         .alert("Something went wrong", isPresented: .init(
             get: { error != nil }, set: { if !$0 { error = nil } })
         ) {
@@ -136,7 +144,7 @@ struct DemoView: View {
                       text: $angle)
                 .textFieldStyle(.roundedBorder)
             HStack(spacing: 14) {
-                Stepper("\(sceneCount) scenes", value: $sceneCount, in: 2...10).fixedSize()
+                Stepper("~\(sceneCount) scenes", value: $sceneCount, in: 3...10).fixedSize()
                 Button { analyse() } label: {
                     Label(analysing ? "Analysing…" : "Analyse repo",
                           systemImage: "sparkles.rectangle.stack")
@@ -170,7 +178,10 @@ struct DemoView: View {
                     }
                 title = r.title
                 subtitle = r.subtitle
-                scenes = r.scenes.map { SceneDraft(text: $0.text, heading: $0.heading) }
+                logo = r.logo
+                scenes = r.scenes.map {
+                    SceneDraft(text: $0.text, heading: $0.heading, role: $0.role, media: $0.media)
+                }
                 analyseCost = r.cost_usd
             } catch { self.error = error.localizedDescription }
         }
@@ -182,8 +193,24 @@ struct DemoView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Demo").font(.title3.bold())
             TextField("Title", text: $title).textFieldStyle(.roundedBorder)
-            TextField("Kicker (small line above the title)", text: $subtitle)
+            TextField("Who it's for — shown above the title", text: $subtitle)
                 .textFieldStyle(.roundedBorder)
+
+            HStack(spacing: 8) {
+                Text("Logo").frame(width: 46, alignment: .leading)
+                if logo.isEmpty {
+                    Button("Choose…") { pickingLogo = true }.controlSize(.small)
+                    Text("none found — the title card uses a monogram of the name")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    Image(nsImage: NSImage(contentsOfFile: logo) ?? NSImage())
+                        .resizable().scaledToFit().frame(width: 26, height: 26)
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    Text((logo as NSString).lastPathComponent).font(.caption).lineLimit(1)
+                    Button("Change") { pickingLogo = true }.buttonStyle(.borderless).controlSize(.small)
+                    Button("Remove") { logo = "" }.buttonStyle(.borderless).controlSize(.small)
+                }
+            }
 
             HStack(spacing: 16) {
                 Picker("Voice", selection: $voiceID) {
@@ -253,6 +280,9 @@ struct DemoView: View {
                     HStack {
                         Text(String(format: "%02d", (scenes.firstIndex(of: scene) ?? 0) + 1))
                             .font(.caption.bold().monospaced()).foregroundStyle(.secondary)
+                        TextField("Label — e.g. The problem", text: $scene.role)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 170)
                         TextField("On-screen heading (optional — taken from the narration if blank)",
                                   text: $scene.heading)
                             .textFieldStyle(.roundedBorder)
@@ -327,15 +357,16 @@ struct DemoView: View {
             }
             .controlSize(.large)
             .keyboardShortcut(.defaultAction)
-            .disabled(busy || engine.health?.ready != true || !hasScript)
+            .disabled(busy || engine.health?.ready != true || !hasScript
+                      || title.trimmingCharacters(in: .whitespaces).isEmpty)
 
             if busy {
                 ProgressView(value: progress) { Text(stage).font(.caption).lineLimit(2) }
             } else if engine.health?.ready != true {
                 Text("Waiting for the engine to finish loading.")
                     .font(.caption).foregroundStyle(.secondary)
-            } else if !hasScript {
-                Text("Write at least one scene of narration.")
+            } else if title.trimmingCharacters(in: .whitespaces).isEmpty || !hasScript {
+                Text("Analyse a repo above, or fill in a title and at least one scene.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -381,10 +412,10 @@ struct DemoView: View {
         result = nil
         player = nil
         let body = DemoRequest(
-            title: title, subtitle: subtitle, voice_id: voiceID,
+            title: title, subtitle: subtitle, logo: logo, voice_id: voiceID,
             scenes: scenes
                 .filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                .map { SceneBody(text: $0.text, heading: $0.heading, media: $0.media) },
+                .map { SceneBody(text: $0.text, heading: $0.heading, role: $0.role, media: $0.media) },
             theme: theme, aspect: aspect, style: style,
             cfg: cfg, timesteps: Int(timesteps), seed: seed)
         Task {
