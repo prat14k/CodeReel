@@ -340,7 +340,7 @@ def build_composition(
         # showing it twice on one frame just looks like a bug.
         if sfx and "rise" in sfx:
             sfx_tags.append(f'<audio id="sfx-rise" src="audio/rise.wav" data-start="0" '
-                            f'data-duration="1.2" data-volume="1"></audio>')
+                            f'data-duration="1.2" data-volume="0.35"></audio>')
 
     # ---- TITLE CARD
     body.append(
@@ -393,7 +393,22 @@ def build_composition(
     if sfx and "whoosh" in sfx:
         sfx_tags.append(f'<audio id="sfx-end" src="audio/whoosh.wav" '
                         f'data-start="{end_start:.3f}" data-duration="0.6" '
-                        f'data-volume="1"></audio>')
+                        f'data-volume="0.35"></audio>')
+
+    # ---- NARRATION: the wavs write_project copied into audio/. Without these the
+    # render has picture and sfx but no voice.
+    def voice(el: str, src: str, sc: Scene) -> None:
+        if sc.audio:
+            sfx_tags.append(
+                f'<audio id="vo-{el}" src="audio/{src}" data-start="{sc.start:.3f}" '
+                f'data-duration="{sc.duration:.3f}" data-volume="1"></audio>')
+
+    if hook:
+        voice("hook", "hook.wav", hook)
+    for i, sc in enumerate(scenes, start=1):
+        voice(str(i), f"scene{i}.wav", sc)
+    if close:
+        voice("close", "close.wav", close)
 
     root_class = "portrait" if portrait else "landscape"
 
@@ -609,7 +624,7 @@ def _emit_scene(idx: int, sc: Scene, p: dict, s: float, portrait: bool,
     if sfx and "whoosh" in sfx:
         sfx_tags.append(f'<audio id="sfx-{idx}" src="audio/whoosh.wav" '
                         f'data-start="{max(t - 0.12, 0):.3f}" data-duration="0.6" '
-                        f'data-volume="1"></audio>')
+                        f'data-volume="0.35"></audio>')
 
 
 def _total_seconds(hook: Scene | None, scenes: list[Scene], close: Scene | None) -> float:
@@ -807,6 +822,9 @@ def _selfcheck() -> None:
         assert page.count('<div id="chap-') == 8, "expected a chapter tick per beat"
         assert hook.start == 0.0 and scenes[0].start == 3.0 + TITLE_CARD_SECONDS
         assert "media/scene3.png" in page, "screenshot not referenced by visuals"
+        assert 'src="audio/hook.wav"' in page and 'src="audio/scene1.wav"' in page \
+            and 'src="audio/close.wav"' in page, "narration not in the composition"
+        assert "object-fit: contain" in page, "screenshot is not contained in its card"
         assert (proj / "media" / "scene3.png").exists(), "screenshot not copied"
 
         # …and the same composition with no logo falls back to a monogram

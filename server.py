@@ -733,7 +733,7 @@ def create_demo(req: DemoReq):
 
 @app.get("/library")
 def library(limit: int = 40):
-    """Every demo this machine has rendered, newest first."""
+    """Every demo this machine has rendered, most recently changed first."""
     out = []
     seen = set()
     dirs = []
@@ -742,11 +742,16 @@ def library(limit: int = 40):
     if LEGACY_OUTPUT_DIR.exists() and LEGACY_OUTPUT_DIR.resolve() != OUTPUT_DIR.resolve():
         dirs.extend(LEGACY_OUTPUT_DIR.iterdir())
 
-    for d in sorted(dirs, key=lambda p: p.name, reverse=True):
-        if not d.is_dir() or d.name in seen:
-            continue
+    # Order by the mp4's mtime, not the directory name: a re-render updates the
+    # file but keeps the timestamp baked into the name.
+    ready = []
+    for d in dirs:
         mp4 = d / "demo.mp4"
-        if not mp4.is_file():
+        if d.is_dir() and mp4.is_file():
+            ready.append((mp4.stat().st_mtime, d, mp4))
+
+    for _, d, mp4 in sorted(ready, key=lambda r: r[0], reverse=True):
+        if d.name in seen:
             continue
         seen.add(d.name)
         meta = {}
@@ -770,6 +775,8 @@ def library(limit: int = 40):
             "has_hook": bool(meta.get("has_hook")),
             "has_close": bool(meta.get("has_close")),
             "created": meta.get("created") or datetime.fromtimestamp(
+                st.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+            "modified": datetime.fromtimestamp(
                 st.st_mtime, timezone.utc).isoformat(timespec="seconds"),
         })
         if len(out) >= limit:

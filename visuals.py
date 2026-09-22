@@ -491,18 +491,26 @@ def _screenshot(scene: dict, ctx: repocontext.RepoContext | None, p: dict, s: fl
     ext = Path(rel).suffix.lower()
     src = f"media/scene{idx}{ext}"
     direction = 1 if idx % 2 == 0 else -1
-    inner = f'<img class="shot" src="{src}" alt="" />'
+    inner = f'<div class="shotframe"><img class="shot" src="{src}" alt="" /></div>'
+    # A screenshot sits in its own card beside the words rather than under them:
+    # full-bleed `cover` crops wide captures to a sliver and puts the heading on
+    # top of whatever survives.
     css = f"""
-      #{prefix} .shot {{ position: absolute; inset: 0; width: 100%; height: 100%;
-        object-fit: cover; }}
+      #{prefix} .shotframe {{ position: relative; width: 100%; overflow: hidden;
+        border-radius: {int(22 * s)}px; background: {p['surface']};
+        border: {max(1, int(2 * s))}px solid {p['border']};
+        box-shadow: 0 {int(28 * s)}px {int(70 * s)}px rgba(0,0,0,0.38); }}
+      #{prefix} .shot {{ display: block; width: 100%; height: auto;
+        max-height: {int(660 * s)}px; object-fit: contain; }}
     """
+    # ponytail: the card drifts instead of the image, so the push never crops it.
     anim = [
-        f'tl.fromTo("#{prefix} .shot", '
-        f'{{scale:1.03, xPercent:{-1.2 * direction}, yPercent:-1}}, '
-        f'{{scale:1.15, xPercent:{1.2 * direction}, yPercent:1.4, '
+        f'tl.fromTo("#{prefix} .shotframe", '
+        f'{{scale:1, xPercent:{-0.6 * direction}}}, '
+        f'{{scale:1.035, xPercent:{0.6 * direction}, '
         f'duration:{max(dur, 2.5):.2f}, ease:"none"}}, {start:.3f});',
     ]
-    return Visual("screenshot", "full", inner, css, anim)
+    return Visual("screenshot", "split", inner, css, anim)
 
 
 BUILDERS = {
