@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><style>
+  html, body { margin:0; padding:0; width:1024px; height:1024px; background:transparent; }
+</style></head>
+<body>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g" x1="0.1" y1="0" x2="0.9" y2="1">
+      <stop offset="0"    stop-color="#9dacff"/>
+      <stop offset="0.48" stop-color="#7386f5"/>
+      <stop offset="1"    stop-color="#4a59e6"/>
+    </linearGradient>
+    <radialGradient id="hl" cx="0.3" cy="0.14" r="0.85">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="sh" x1="0" y1="0.6" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2370" stop-opacity="0"/>
+      <stop offset="1" stop-color="#1b2370" stop-opacity="0.30"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="62" y="62" width="900" height="900" rx="216" fill="url(#g)"/>
+  <rect x="62" y="62" width="900" height="900" rx="216" fill="url(#hl)"/>
+  <rect x="62" y="62" width="900" height="900" rx="216" fill="url(#sh)"/>
+
+  <!-- play mark -->
+  <path d="M404 368 L664 512 L404 656 Z" fill="#ffffff"
+        stroke="#ffffff" stroke-width="56" stroke-linejoin="round"/>
+
+  <!-- voice -->
+  <g fill="#ffffff">
+    <rect x="332" y="712" width="34" height="52"  rx="17" opacity="0.72"/>
+    <rect x="394" y="694" width="34" height="88"  rx="17" opacity="0.88"/>
+    <rect x="456" y="712" width="34" height="52"  rx="17" opacity="0.72"/>
+    <rect x="518" y="686" width="34" height="104" rx="17" opacity="0.95"/>
+    <rect x="580" y="712" width="34" height="52"  rx="17" opacity="0.72"/>
+    <rect x="642" y="698" width="34" height="80"  rx="17" opacity="0.85"/>
+  </g>
+</svg>
+</body>
+</html>

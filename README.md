@@ -1,54 +1,100 @@
 # VoxDemo
 
-A macOS app that generates narrated AI product demos. [HyperFrames](https://hyperframes.heygen.com)
-renders the video (HTML → MP4), [VoxCPM2](https://github.com/OpenBMB/VoxCPM) speaks it. Both run
-on-device — no API keys, no accounts, no upload.
+A macOS app that turns a local repository into a narrated demo video. It reads the code,
+writes the script, speaks it in a cloned voice and renders the MP4 — all on-device.
+[HyperFrames](https://hyperframes.heygen.com) renders (HTML → MP4), [VoxCPM2](https://github.com/OpenBMB/VoxCPM)
+speaks. No account, no API key, no upload.
 
 ```
-mac/          SwiftUI app (VoxDemo.app)
-server.py     localhost sidecar: VoxCPM2 + voice store + render jobs
-demo.py       script + narration → HyperFrames composition → MP4
-app.py        the original Gradio playground (still works, unchanged)
+mac/            SwiftUI app (VoxDemo.app)
+server.py       localhost sidecar: script writing + VoxCPM2 voices + render jobs
+providers.py    script writing: the Claude Code CLI, or any OpenAI-compatible model
+repocontext.py  reads a repo into a digest that a tool-less model can work from
+visuals.py      scene visuals — screenshots, code cards, file trees, stats, diagrams
+demo.py         beats + narration → HyperFrames composition → MP4
+app.py          the original Gradio playground (still works, unchanged)
 ```
 
 ## Build & run
 
 ```sh
 uv venv --python 3.12 .venv
-uv pip install --python .venv/bin/python voxcpm soundfile gradio
+uv pip install --python .venv/bin/python voxcpm soundfile gradio fastapi uvicorn
 mac/build.sh
 open mac/build/VoxDemo.app
 ```
 
-The app launches `server.py` itself and shows engine state in the status bar. First launch loads
-~5 GB of weights (already cached here). Output lands in `~/Movies/VoxDemo/<demo>-<stamp>/` —
-`demo.mp4` plus the full HyperFrames project next to it, so you can open it in HyperFrames Studio
+The app launches `server.py` itself. First launch loads ~5 GB of voice weights (already
+cached here). Output lands in `~/Movies/VoxDemo/<demo>-<stamp>/` — `demo.mp4` plus the full
+HyperFrames project next to it, so you can open it in HyperFrames Studio
 (`cd <project> && npx hyperframes preview`) and keep editing by hand.
 
-## From a repo
+## Writing the script
 
-Point the Demo tab at a local repository and press **Analyse repo**. VoxDemo shells out to the
-Claude Code CLI already installed on this machine (`claude -p`), which reads the repo with its own
-file tools and drafts a script that follows a pitch, not a feature dump:
+Two backends, same output. Pick one in **Settings → Script writer**.
 
-**who it's for → the problem they hit → what this is and how it fixes it → standout features →
-the close.** Each scene carries that beat as an on-screen label, and the audience line becomes the
-title card's kicker.
+| | |
+|---|---|
+| **Claude Code** | Shells out to the `claude` CLI already on this machine, which reads the repo with its own file tools. Best quality. Read-only by construction: `--allowedTools Read Grep Glob`, `--disallowedTools Bash Write Edit`, and anything that would prompt is denied instead. |
+| **Any OpenAI-compatible model** | oMLX, Ollama, LM Studio, llama.cpp, vLLM, OpenAI, Groq, OpenRouter, or a custom endpoint. Runs entirely locally if the server does. |
 
-It also hunts for the app's **own** logo and any real screenshots, and attaches them — a repo with
-no assets of its own gets a monogram wordmark instead, so the video is still branded. Vendor icons
-of products the app merely integrates with are rejected, as is anything under a build directory.
+Presets ship for the common runners and **Find local servers** probes the usual ports
+(8000, 11434, 1234, 8080, 8001, 5000, 3000, 8081) and offers whichever ones answer.
 
-Everything lands in the fields below for you to edit — nothing is generated until you press
-Generate, and the app ships no placeholder script to delete first. The scene count is a target,
-not a quota: the beats win.
+### How a local model reads a repo
 
-It is read-only by construction: `--allowedTools Read Grep Glob`, `--disallowedTools Bash Write
-Edit`, and `--permission-prompts none` so anything that would prompt is denied instead. Progress
-shows what it is reading. A 4-scene draft of this repo takes ~30 s and costs ~$0.15 on Sonnet.
+A chat endpoint has no file tools, so VoxDemo does the reading itself. `repocontext.py`
+walks the tree, ranks every file — README and manifests first, then entry points, then
+source by substance — and emits a digest that fits a character budget (48k by default,
+which sits comfortably inside a 32k-token window). It also inventories every image with
+its real pixel dimensions, and reads the dependency list out of `package.json`,
+`pyproject.toml`, `Cargo.toml`, `go.mod`, `Package.swift`, or failing all of those, the
+install commands in the README.
 
-Needs the `claude` CLI on PATH and signed in. Override with `VOXDEMO_CLAUDE` (full path) and
-`VOXDEMO_CLAUDE_MODEL` (default `sonnet`).
+That digest is what the model sees. Raise **Repo digest** in Settings if your model has a
+bigger window; a 35B local model writes a noticeably better script than a 9B one.
+
+### The beats
+
+Both backends are asked for the same shape, in this order:
+
+**hook → title → problem → solution → features → close → end card**
+
+The hook is a spoken cold open that names the pain before the product is named. Its kinetic
+headline *is* the sentence, so it carries no caption bar of its own. The close carries a call
+to action that has to be real — a licence, a URL, a price — and lands on an end card. The
+scene count is a target, not a quota: the beats win.
+
+## The video
+
+Every scene gets a **visual**, chosen by the script writer and resolved against the repo —
+never a bare heading over a gradient. Eight kinds:
+
+| | |
+|---|---|
+| `screenshot` | a real image from the repo, with a slow Ken Burns push |
+| `code` | a source file as a syntax-highlighted card, opened at its most interesting block, not line 1 |
+| `tree` | the project's file structure, revealed line by line |
+| `stats` | the repo's own numbers — lines, files, languages |
+| `terminal` | up to three real commands pulled from the README's shell blocks or a manifest |
+| `stack` | the technologies it actually depends on |
+| `diagram` | a flow built from real components |
+| `mesh` | an abstract node graph — the cold open, and the fallback |
+
+Paths are validated: if the model names an image that is not in the repo, the scene falls
+back to a generated visual rather than shipping a broken frame. Real screenshots always beat
+decoration.
+
+Repetition is bounded three ways: consecutive runs of the same generated kind are rotated
+apart, no single generated kind may take more than a quarter of the beats, and the cold open
+is a full-bleed node graph so the video never starts on a plain title.
+
+On top of that: a chapter rail that names the current beat, a progress bar, an animated
+background, alternating split layouts, per-scene transitions, word-by-word kinetic captions,
+and optional transition whooshes synthesized locally with ffmpeg.
+
+Visuals are inline HTML/CSS — a composition needs no assets beyond the screenshots the repo
+already ships, so nothing can go missing at render time.
 
 ## Voices
 
@@ -61,8 +107,8 @@ Every voice — preset or cloned — speaks through a reference clip, so timbre 
 scenes. Style direction ("cheerful, slightly faster") is available under Advanced. Presets are
 enrolled in the background as soon as the model loads, so Preview is never a first-use wait.
 
-**The mic:** the app records with `AVAudioRecorder`, not the browser, which is what was broken in
-the Gradio version. macOS asks for microphone access on the first Record. The build is ad-hoc
+**The mic:** the app records with `AVAudioRecorder`, not the browser, which is what was broken
+in the Gradio version. macOS asks for microphone access on the first Record. The build is ad-hoc
 signed, so that grant resets each time you rebuild — expect the prompt again.
 
 ## Performance
@@ -79,6 +125,9 @@ Measured on this M5 Pro (MPS, float32). Generation is ~1.4× real time — a 2.5
 So VoxDemo loads with `load_denoiser=False` and only ever uses reference cloning. Previews now
 land in 3–6 s. If you want denoising back, clean the clip once before importing it — a one-shot
 `ffmpeg -af afftdn` or any editor beats 7 minutes of ZipEnhancer per generation.
+
+A 5-scene render with a hook and a close is roughly 40 s of video and about 30 s of rendering
+on top of the narration.
 
 ## HyperFrames requirements — all already met on this machine
 
@@ -107,31 +156,54 @@ Optional, not required:
 
 ## How a demo is built
 
-0. Optionally, Claude Code reads a repo and drafts the scenes; you edit them.
-1. Each scene's narration goes through VoxCPM with the voice's reference clip; leading and
-   trailing silence is trimmed so the measured length matches the speech.
-2. Scene durations come from those measured lengths, so the timeline can't drift out of sync.
-3. `demo.py` emits one `index.html` — branded title card (logo or monogram), a wordmark that
-   rides the whole video, a progress bar, per-scene `<audio>`, role label + heading, optional
-   full-bleed screenshot or clip, timed caption chunks, GSAP entrances.
+0. Optionally, a model reads a repo and drafts the beats; you edit them.
+1. The hook, each scene and the close go through VoxCPM with the voice's reference clip; leading
+   and trailing silence is trimmed so the measured length matches the speech.
+2. Durations come from those measured lengths, so the timeline can't drift out of sync.
+3. `visuals.py` builds each scene's visual; `demo.py` emits one `index.html` — brand mark,
+   chapter rail, progress bar, per-scene `<audio>`, role chip + heading, the visual, timed
+   kinetic captions, GSAP entrances and transitions.
 4. `hyperframes lint --json` gates it, then `hyperframes render` produces the MP4.
 
-Looks: `midnight`, `studio`, `neon`. Frames: landscape, portrait, square. Same seed + same script
-renders identically.
+Looks: `midnight`, `ember`, `neon`, `studio`. Frames: landscape, portrait, square. Same seed +
+same script renders identically.
+
+## The app
+
+Sidebar with four places to be: **Create**, **Library**, **Voices**, **Settings**. Create is a
+four-step flow — Source, Script, Look, Render — and you can jump to any step once a script exists.
+
+- **Script** is the part that matters. Every scene is a card you can drag to reorder, with a
+  live miniature of the visual it will render, a picker for the visual kind, and a file picker
+  when that kind needs one. Blank headings are taken from the narration.
+- **Look** shows the themes as swatches of their actual palettes, not names.
+- **Library** lists everything you have rendered with a real poster frame pulled from the video.
+- Progress is streamed from the sidecar, so a slow local model shows tokens arriving instead of
+  a frozen spinner.
 
 ## Checks
 
 ```sh
-python3 demo.py --selfcheck            # timing math + composition lints clean
-swift mac/timer-check.swift            # why the record timer read 0.0s, and that the fix ticks
-.venv/bin/python server.py --dry-run   # API without loading the model
+.venv/bin/python demo.py --selfcheck        # timing math + composition lints clean
+.venv/bin/python contract_check.py          # every endpoint matches the Swift wire types
+swift mac/timer-check.swift                 # why the record timer read 0.0s, and that the fix ticks
+.venv/bin/python server.py --dry-run        # API without loading the model
+mac/make-icon.sh                            # regenerate VoxDemo.icns (only if the artwork changes)
 ```
+
+`contract_check.py` earns its place: Swift's synthesized `Decodable` throws on a missing key
+even when the property has a default value, so an omitted field is a hard failure in the app
+rather than a fallback. It boots the sidecar in dry-run, walks every response shape and reports
+anything the client would choke on.
 
 ## Config
 
+Settings live at `~/Library/Application Support/VoxDemo/settings.json` (0600 — it holds an API
+key) and are editable in the app. Environment overrides:
+
 `VOXCPM_MODEL_ID` · `VOXCPM_DEVICE` (`auto|cpu|mps|cuda`) · `VOXDEMO_PORT` (8809) ·
 `VOXDEMO_HOME` · `VOXDEMO_OUTPUT` · `HYPERFRAMES_VERSION` · `VOXDEMO_CLAUDE` ·
-`VOXDEMO_CLAUDE_MODEL` · `VOXDEMO_ANALYZE_TIMEOUT` (420 s)
+`VOXDEMO_CLAUDE_MODEL` · `VOXDEMO_ANALYZE_TIMEOUT` (600 s)
 
 ## Misuse
 

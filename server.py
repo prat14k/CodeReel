@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""VoxDemo sidecar — VoxCPM2 voice store + HyperFrames demo rendering over localhost HTTP.
+"""VoxDemo sidecar — script writing, VoxCPM2 voices and HyperFrames rendering.
 
-The macOS app spawns this and talks JSON to 127.0.0.1. Everything runs on-device.
+The macOS app spawns this and talks JSON to 127.0.0.1. Everything that can run
+on-device does: the TTS model, the repo reading, the video render.
 
     .venv/bin/python server.py            # serve on 127.0.0.1:8809
     .venv/bin/python server.py --dry-run  # API only, no model (for UI work)
+
+Script writing goes through `providers`, which supports both the Claude Code CLI
+and any OpenAI-compatible endpoint (oMLX, Ollama, LM Studio, vLLM, OpenAI…).
 """
 
 from __future__ import annotations
@@ -13,12 +17,12 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import sys
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,9 +31,11 @@ import soundfile as sf
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import demo as demolib
+import providers
+import repocontext
 
 DRY_RUN = "--dry-run" in sys.argv
 MODEL_ID = os.environ.get("VOXCPM_MODEL_ID", "openbmb/VoxCPM2")
@@ -40,6 +46,7 @@ SUPPORT = Path(os.environ.get(
     "VOXDEMO_HOME", Path.home() / "Library" / "Application Support" / "VoxDemo"))
 VOICES_DIR = SUPPORT / "voices"
 CACHE_DIR = SUPPORT / "cache"
+SETTINGS_FILE = SUPPORT / "settings.json"
 OUTPUT_DIR = Path(os.environ.get("VOXDEMO_OUTPUT", Path.home() / "Movies" / "VoxDemo"))
 for d in (VOICES_DIR, CACHE_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
@@ -67,163 +74,130 @@ PRESETS = [
     ("rio", "Rio", "a man with a lively storytelling cadence, warm and expressive"),
 ]
 
-CLAUDE_MODEL = os.environ.get("VOXDEMO_CLAUDE_MODEL", "sonnet")
-ANALYZE_TIMEOUT = int(os.environ.get("VOXDEMO_ANALYZE_TIMEOUT", "420"))
-
-ANALYZE_PROMPT = """You are writing the narration script for a short demo video that \
-introduces the app in this repository to someone who has never seen it.
-
-Read enough of the repo to understand it for real — README, entry points, the main \
-source files, any docs. Do not skim one file and guess.
-
-The script must land these beats, in this order. Aim for about {n} scenes, but the \
-beats win: never drop one to hit the number, and never pad with filler to reach it.
-1. WHO IT IS FOR — name the actual audience, concretely.
-2. THE PROBLEM — the pain that audience hits today, in their words, not abstractions.
-3. THE SOLUTION — what this app is, and briefly HOW it solves that problem.
-4. STANDOUT FEATURES — one scene per genuinely notable capability. Only real ones; \
-if the app has none worth calling out, spend the scenes on the solution instead.
-5. THE CLOSE — what it costs, how to get it, or the payoff of using it.
-{angle}
-Give every scene a short `role` label that will be shown on screen, 1-3 words, \
-such as "Who it's for", "The problem", "How it works", "Feature", or "Get it".
-
-Also find, if and only if they genuinely exist in this repo:
-- `logo`: the app's OWN icon or logo image. Repo-relative path. It must belong to \
-this app — never a third-party or vendor logo, never an icon of some other product \
-the app merely integrates with, and never anything under a build output directory. \
-If the app ships no logo of its own, return "".
-- `screenshot` per scene: a real screenshot or demo image OF THIS APP that fits that \
-scene. Repo-relative path, or "" when there is none. Never invent a path.
-
-Writing rules:
-- Each narration is 1-2 sentences, 12-30 words, written to be SPOKEN ALOUD. No \
-markdown, no bullets, no file paths, and no code identifiers a person would not say.
-- Speak to the viewer as "you". Make it warm and concrete, not a feature list read out.
-- Each heading is 2-6 words and appears on screen.
-- Never invent features, numbers, prices, or platforms. Everything must be in the repo.
-
-Reply with ONLY this JSON object, no prose and no code fence:
-{{"title":"<=6 words, the app's name","audience":"2-6 words naming who it is for",\
-"logo":"repo-relative path or empty string","scenes":[{{"role":"1-3 words",\
-"heading":"2-6 words","narration":"...","screenshot":"repo-relative path or empty string"}}]}}
-"""
-
-IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".icns"}
-BUILD_DIRS = {".build", "build", "node_modules", ".git", "dist", "out", "target",
-              "DerivedData", ".venv", "Pods", "vendor", "__pycache__"}
+ANALYZE_TIMEOUT = int(os.environ.get("VOXDEMO_ANALYZE_TIMEOUT", "600"))
+IMAGE_EXT = repocontext.IMAGE_EXT
+BUILD_DIRS = repocontext.IGNORE_DIRS
 
 
-# ---------------------------------------------------------------- repo analysis
+# ---------------------------------------------------------------- settings
 
-def _claude_bin() -> str:
-    override = os.environ.get("VOXDEMO_CLAUDE")
-    if override:
-        return override
-    path = os.pathsep.join([os.environ.get("PATH", ""), str(Path.home() / ".local" / "bin"),
-                            "/opt/homebrew/bin", "/usr/local/bin"])
-    found = shutil.which("claude", path=path)
-    if not found:
-        raise HTTPException(400, "Claude Code CLI not found. Install it, or set VOXDEMO_CLAUDE "
-                                 "to the full path of the `claude` binary.")
-    return found
+DEFAULT_SETTINGS = {
+    "provider": {
+        "kind": "openai", "preset": "omlx", "base_url": "", "api_key": "",
+        "model": "", "temperature": 0.4, "max_tokens": 6000, "timeout": 300,
+        "digest_budget": 48000, "claude_model": providers.CLAUDE_MODEL,
+    },
+    "defaults": {
+        "theme": "midnight", "aspect": "landscape", "voice_id": "aria",
+        "sfx": True, "scenes": 6, "angle": "",
+    },
+}
+# Reentrant: save_settings() holds the lock and calls load_settings() inside it.
+_settings_lock = threading.RLock()
 
 
-def _repo_asset(repo: Path, rel: str) -> str:
-    """Resolve a model-supplied image path, or return "" — never trust it blindly."""
+def load_settings() -> dict:
+    """Read settings.json, filling in anything a previous version did not have."""
+    with _settings_lock:
+        data = {}
+        if SETTINGS_FILE.exists():
+            try:
+                data = json.loads(SETTINGS_FILE.read_text())
+            except (json.JSONDecodeError, OSError):
+                data = {}
+        out = {}
+        for section, defaults in DEFAULT_SETTINGS.items():
+            merged = dict(defaults)
+            if isinstance(data.get(section), dict):
+                merged.update({k: v for k, v in data[section].items() if k in defaults})
+            out[section] = merged
+        return out
+
+
+def save_settings(patch: dict) -> dict:
+    """Merge a partial update and write it back, 0600 — it holds an API key."""
+    with _settings_lock:
+        current = load_settings()
+        for section, values in (patch or {}).items():
+            if section in current and isinstance(values, dict):
+                current[section].update({k: v for k, v in values.items()
+                                         if k in current[section]})
+        SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SETTINGS_FILE.write_text(json.dumps(current, indent=2))
+        try:
+            SETTINGS_FILE.chmod(0o600)
+        except OSError:
+            pass
+        return current
+
+
+def provider_from(body: dict | None) -> providers.Provider:
+    """A request may override the saved provider; otherwise use the saved one."""
+    saved = load_settings()["provider"]
+    merged = dict(saved)
+    if body:
+        merged.update({k: v for k, v in body.items() if v not in (None, "")})
+    known = {f for f in providers.Provider.__dataclass_fields__}
+    return providers.Provider(**{k: v for k, v in merged.items() if k in known}).resolved()
+
+
+# ---------------------------------------------------------------- repo context
+
+_ctx_cache: dict[str, tuple[float, repocontext.RepoContext]] = {}
+_ctx_lock = threading.Lock()
+
+
+def repo_ctx(repo_path: str, max_age: float = 900) -> repocontext.RepoContext | None:
+    """Scan a repo, cached briefly so a render does not re-walk it every time."""
+    if not repo_path:
+        return None
+    key = str(Path(repo_path).expanduser().resolve())
+    with _ctx_lock:
+        hit = _ctx_cache.get(key)
+        if hit and time.time() - hit[0] < max_age:
+            return hit[1]
+    try:
+        ctx = repocontext.scan(Path(key))
+    except Exception as e:
+        print(f"[voxdemo] could not scan {key}: {e}", flush=True)
+        return None
+    with _ctx_lock:
+        _ctx_cache[key] = (time.time(), ctx)
+    return ctx
+
+
+def _abs_asset(repo: Path, rel: str) -> str:
+    """Repo-relative asset path → absolute, refusing anything outside the repo."""
     rel = (rel or "").strip().lstrip("/")
     if not rel:
         return ""
     root = repo.resolve()
     try:
         full = (root / rel).resolve()
-        parts = full.relative_to(root).parts
+        full.relative_to(root)
     except (ValueError, OSError):
-        return ""  # escaped the repo, or unreadable
-    if not full.is_file() or full.suffix.lower() not in IMAGE_EXT:
         return ""
-    if BUILD_DIRS.intersection(parts):
-        return ""  # build output is not the app's branding
+    if not full.is_file():
+        return ""
     if full.suffix.lower() == ".icns":
         png = CACHE_DIR / f"logo_{abs(hash(str(full))) % 10**10}.png"
-        subprocess.run(["sips", "-s", "format", "png", str(full), "--out", str(png)],
-                       capture_output=True)
+        if not png.exists():
+            import subprocess
+            subprocess.run(["sips", "-s", "format", "png", str(full), "--out", str(png)],
+                           capture_output=True)
         return str(png) if png.exists() else ""
     return str(full)
 
 
-def _extract_json(text: str) -> dict:
-    """The model was told to emit bare JSON; tolerate a fence or a stray sentence."""
-    body = text.strip()
-    if body.startswith("```"):
-        body = re.sub(r"^```[a-z]*\s*|\s*```$", "", body, flags=re.S)
-    start, end = body.find("{"), body.rfind("}")
-    if start < 0 or end <= start:
-        raise RuntimeError(f"Claude did not return JSON. It said: {text[:300]}")
-    return json.loads(body[start:end + 1])
-
-
-def analyze_repo(repo: Path, n_scenes: int, angle: str, on_tool=None) -> dict:
-    """Ask the local Claude Code CLI to read the repo and draft a demo script.
-
-    Read-only by construction: only Read/Grep/Glob are allowed and anything that
-    would prompt for permission is denied instead.
-    """
-    prompt = ANALYZE_PROMPT.format(
-        n=n_scenes,
-        angle=f"\n\nAngle the script for: {_clean(angle)}" if _clean(angle) else "")
-    cmd = [_claude_bin(), "-p", prompt,
-           "--output-format", "stream-json", "--verbose",
-           "--model", CLAUDE_MODEL,
-           "--permission-prompts", "none",
-           "--allowedTools", "Read", "Grep", "Glob",
-           "--disallowedTools", "Bash", "Write", "Edit"]
-    proc = subprocess.Popen(cmd, cwd=repo, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, bufsize=1)
-    deadline = time.time() + ANALYZE_TIMEOUT
-    result = None
-    try:
-        for line in proc.stdout:
-            if time.time() > deadline:
-                proc.kill()
-                raise RuntimeError(f"repo analysis went past {ANALYZE_TIMEOUT}s — stopped it")
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "assistant" and on_tool:
-                for block in event.get("message", {}).get("content", []):
-                    if block.get("type") == "tool_use":
-                        arg = (block.get("input") or {})
-                        label = arg.get("file_path") or arg.get("pattern") or arg.get("path") or ""
-                        on_tool(f"{block['name']} {Path(str(label)).name}".strip())
-            elif event.get("type") == "result":
-                result = event
-    finally:
-        proc.stdout.close()
-        stderr = proc.stderr.read()
-        proc.stderr.close()
-        proc.wait()
-
-    if result is None:
-        raise RuntimeError(f"Claude Code produced no result. {stderr[:400]}")
-    if result.get("is_error") or result.get("subtype") != "success":
-        raise RuntimeError(f"Claude Code failed ({result.get('subtype')}): "
-                           f"{str(result.get('result'))[:300]}")
-
-    data = _extract_json(result.get("result") or "")
-    scenes = [{"heading": _clean(sc.get("heading", "")),
-               "role": _clean(sc.get("role", "")),
-               "media": _repo_asset(repo, sc.get("screenshot", "")),
-               "text": _clean(sc.get("narration", ""))}
-              for sc in data.get("scenes", []) if _clean(sc.get("narration", ""))]
-    if not scenes:
-        raise RuntimeError("Claude Code returned no scenes.")
-    return {"title": _clean(data.get("title", "")) or repo.name,
-            "subtitle": _clean(data.get("audience", "")),
-            "logo": _repo_asset(repo, data.get("logo", "")),
-            "scenes": scenes,
-            "cost_usd": round(float(result.get("total_cost_usd") or 0), 4)}
+def _resolve_assets(repo: Path, result: dict) -> dict:
+    """Turn the model's repo-relative paths into paths the app can open."""
+    result["logo"] = _abs_asset(repo, result.get("logo", ""))
+    for sc in result.get("scenes", []):
+        if sc.get("visual") == "screenshot":
+            sc["visual_ref"] = _abs_asset(repo, sc.get("visual_ref", ""))
+            if not sc["visual_ref"]:
+                sc["visual"] = ""            # fall back to a generated visual
+    return result
 
 
 # ---------------------------------------------------------------- model
@@ -435,8 +409,9 @@ class SpeakReq(BaseModel):
 
 class AnalyzeReq(BaseModel):
     repo_path: str
-    scenes: int = 4
+    scenes: int = 6
     angle: str = ""
+    provider: dict | None = None
 
 
 class SceneIn(BaseModel):
@@ -444,6 +419,20 @@ class SceneIn(BaseModel):
     heading: str = ""
     role: str = ""
     media: str = ""
+    visual: str = ""
+    visual_ref: str = ""
+    visual_note: str = ""
+    bullets: list[str] = Field(default_factory=list)
+
+
+class CloseIn(BaseModel):
+    text: str
+    heading: str = ""
+    role: str = ""
+    cta: str = ""
+    visual: str = ""
+    visual_ref: str = ""
+    visual_note: str = ""
 
 
 class DemoReq(BaseModel):
@@ -452,22 +441,88 @@ class DemoReq(BaseModel):
     logo: str = ""
     voice_id: str
     script: str = ""
-    scenes: list[SceneIn] = []
+    hook: str = ""
+    close: CloseIn | None = None
+    scenes: list[SceneIn] = Field(default_factory=list)
     theme: str = "midnight"
     aspect: str = "landscape"
     style: str = ""
     cfg: float = 2.0
     timesteps: int = 12
     seed: int = 42
+    sfx: bool = True
+    repo_path: str = ""
+
+
+class SettingsPatch(BaseModel):
+    provider: dict | None = None
+    defaults: dict | None = None
 
 
 @app.get("/health")
 def health():
+    ok, _ = providers.claude_available()
+    prov = load_settings()["provider"]
     return {"ready": _state["ready"], "loading": _state["loading"], "error": _state["error"],
             "warm": _state["warm"],
             "dry_run": DRY_RUN, "model": MODEL_ID, "device": DEVICE,
             "sample_rate": SAMPLE_RATE, "output_dir": str(OUTPUT_DIR),
-            "themes": list(demolib.THEMES), "aspects": list(demolib.ASPECTS)}
+            "themes": list(demolib.THEMES), "aspects": list(demolib.ASPECTS),
+            "theme_labels": {k: v.get("label", k.title()) for k, v in demolib.THEMES.items()},
+            "theme_palettes": {k: {"bg": v["bg"], "bg2": v["bg2"], "accent": v["accent"],
+                                   "accent2": v.get("accent2", v["accent"]),
+                                   "text": v["text"], "dark": v.get("dark", True)}
+                               for k, v in demolib.THEMES.items()},
+            "visual_kinds": list(providers.VISUAL_KINDS),
+            "provider": {"kind": prov.get("kind"), "preset": prov.get("preset"),
+                         "model": prov.get("model"), "base_url": prov.get("base_url")},
+            "claude_available": ok}
+
+
+@app.get("/settings")
+def get_settings():
+    s = load_settings()
+    s["provider"]["api_key_set"] = bool(s["provider"].get("api_key"))
+    s["provider"]["api_key"] = ""
+    s["presets"] = {k: {kk: vv for kk, vv in v.items() if kk != "default_key"}
+                    for k, v in providers.PRESETS.items()}
+    s["claude_available"] = providers.claude_available()[0]
+    s["output_dir"] = str(OUTPUT_DIR)
+    return s
+
+
+@app.put("/settings")
+def put_settings(patch: SettingsPatch):
+    body = patch.model_dump(exclude_none=True)
+    prov = body.get("provider") or {}
+    # An empty key means "leave it alone", not "erase it" — the UI never sees it.
+    if prov.get("api_key") == "":
+        prov.pop("api_key", None)
+    saved = save_settings({"provider": prov, "defaults": body.get("defaults") or {}})
+    saved["provider"]["api_key_set"] = bool(saved["provider"].get("api_key"))
+    saved["provider"]["api_key"] = ""
+    return saved
+
+
+@app.post("/providers/models")
+def provider_models(cfg: dict | None = None):
+    p = provider_from(cfg)
+    try:
+        return {"ok": True, "models": providers.list_models(p), "provider": p.label,
+                "error": ""}
+    except Exception as e:
+        return {"ok": False, "models": [], "error": str(e)[:400], "provider": p.label}
+
+
+@app.post("/providers/test")
+def provider_test(cfg: dict | None = None):
+    return providers.test(provider_from(cfg))
+
+
+@app.get("/providers/detect")
+def provider_detect():
+    """Find OpenAI-compatible servers already running on this machine."""
+    return {"found": providers.probe_local()}
 
 
 @app.get("/voices")
@@ -506,10 +561,11 @@ def clone_voice(req: CloneReq):
 
 @app.delete("/voices/{vid}")
 def delete_voice(vid: str):
-    import shutil
     d = _voice_dir(vid)
     if not d.exists():
         raise HTTPException(404, f"voice {vid!r} not found")
+    if any(p[0] == vid for p in PRESETS):
+        raise HTTPException(400, "preset voices cannot be deleted")
     shutil.rmtree(d)
     return {"deleted": vid}
 
@@ -540,20 +596,17 @@ def analyze(req: AnalyzeReq):
     repo = Path(req.repo_path).expanduser()
     if not repo.is_dir():
         raise HTTPException(400, f"not a folder: {repo}")
-    n = max(2, min(int(req.scenes), 10))
+    n = max(3, min(int(req.scenes), 12))
+    p = provider_from(req.provider)
     jid = _job("analyze")
 
     def work(jid):
-        _step(jid, 0.05, "starting Claude Code")
-        reads = [0]
+        def on_step(frac, msg):
+            _step(jid, frac, msg)
 
-        def on_tool(label: str):
-            reads[0] += 1
-            _step(jid, min(0.10 + 0.05 * reads[0], 0.85), f"reading the repo — {label}")
-
-        out = analyze_repo(repo, n, req.angle, on_tool)
-        _step(jid, 0.95, "drafting the script")
-        return out
+        result = providers.analyze(p, str(repo), n, req.angle, on_step)
+        _step(jid, 0.97, "resolving assets")
+        return _resolve_assets(repo, result)
 
     _run(jid, work, pool=_cpu_pool)
     return {"job_id": jid}
@@ -568,6 +621,7 @@ def create_demo(req: DemoReq):
     if len(scenes_in) > 40:
         raise HTTPException(400, f"{len(scenes_in)} scenes is more than this build renders (40 max)")
     title = _clean(req.title) or "Untitled demo"
+    ctx = repo_ctx(req.repo_path)
     jid = _job("demo")
 
     def work(jid):
@@ -577,26 +631,58 @@ def create_demo(req: DemoReq):
         v = _read_voice(_voice_dir(req.voice_id)) or {}
         ref = _voice_dir(req.voice_id) / "ref.wav"
 
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        proj = OUTPUT_DIR / f"{_slug(title, 'demo')}-{stamp}"
-        scenes, n = [], len(scenes_in)
+        def narrate(text: str, frac: float, label: str, name: str) -> demolib.Scene:
+            _step(jid, frac, label)
+            wav = _generate(text, ref, req.style, req.cfg, req.timesteps, req.seed + abs(hash(name)) % 97)
+            path, dur = _write(wav, CACHE_DIR / jid / f"{name}.wav")
+            return demolib.Scene(text=_clean(text), audio=str(path), duration=dur, ctx=ctx)
+
+        # The hook and close are narrated too, so the video opens and ends on a voice.
+        hook = None
+        if _clean(req.hook):
+            hook = narrate(req.hook, 0.04, "recording the opening", "hook")
+            hook.role = "Intro"
+            hook.visual = "mesh"
+
+        total_units = len(scenes_in) + (1 if req.close else 0)
+        scenes = []
         for i, s in enumerate(scenes_in, start=1):
-            _step(jid, 0.05 + 0.65 * (i - 1) / n, f"narrating scene {i} of {n}")
-            wav = _generate(s.text, ref, req.style, req.cfg, req.timesteps, req.seed + i)
-            path, dur = _write(wav, CACHE_DIR / jid / f"scene{i}.wav")
+            sc = narrate(s.text, 0.06 + 0.60 * (i - 1) / max(total_units, 1),
+                         f"narrating scene {i} of {len(scenes_in)}", f"scene{i}")
+            sc.heading = _clean(s.heading)
+            sc.role = _clean(s.role)
+            sc.visual = _clean(s.visual)
+            sc.visual_ref = _clean(s.visual_ref)
+            sc.visual_note = _clean(s.visual_note)
+            sc.bullets = [b for b in (s.bullets or []) if _clean(b)]
             media = str(Path(s.media).expanduser()) if _clean(s.media) else ""
             if media and not Path(media).is_file():
                 raise HTTPException(400, f"scene {i} media not found: {media}")
-            scenes.append(demolib.Scene(text=_clean(s.text), heading=_clean(s.heading),
-                                        role=_clean(s.role), media=media,
-                                        audio=str(path), duration=dur))
+            sc.media = media
+            if media and not sc.visual:
+                sc.visual = "screenshot"
+            scenes.append(sc)
+
+        close = None
+        if req.close and _clean(req.close.text):
+            close = narrate(req.close.text, 0.68, "recording the close", "close")
+            close.heading = _clean(req.close.heading) or "Get started"
+            close.role = _clean(req.close.role) or "Get it"
+            close.cta = _clean(req.close.cta)
+            close.visual = _clean(req.close.visual) or "stats"
+            close.visual_ref = _clean(req.close.visual_ref)
+            close.visual_note = _clean(req.close.visual_note)
 
         _step(jid, 0.72, "building composition")
         logo = str(Path(req.logo).expanduser()) if _clean(req.logo) else ""
         if logo and not Path(logo).is_file():
             raise HTTPException(400, f"logo not found: {logo}")
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        proj = OUTPUT_DIR / f"{_slug(title, 'demo')}-{stamp}"
         demolib.write_project(proj, title, _clean(req.subtitle), scenes,
-                              req.theme, req.aspect, logo=logo)
+                              req.theme, req.aspect, logo=logo,
+                              hook=hook, close=close, with_sfx=bool(req.sfx),
+                              ctx=ctx)
         errors = demolib.lint(proj)
         if errors:
             raise RuntimeError("composition failed lint: " +
@@ -610,13 +696,77 @@ def create_demo(req: DemoReq):
                 _step(jid, 0.75 + 0.24 * int(m.group(1)) / 100, m.group(2).strip()[:80])
 
         out = demolib.render(proj, proj / "demo.mp4", on_log=on_log)
-        total = demolib.TITLE_CARD_SECONDS + sum(s.duration + demolib.SCENE_TAIL_SECONDS
-                                                 for s in scenes)
+        total = demolib._total_seconds(hook, scenes, close)
+        info = {"id": proj.name, "name": title, "title": title,
+                "subtitle": _clean(req.subtitle),
+                "scenes": len(scenes), "duration": round(total, 2),
+                "voice": v.get("name", req.voice_id), "theme": req.theme,
+                "aspect": req.aspect, "sfx": bool(req.sfx),
+                "has_hook": hook is not None, "has_close": close is not None,
+                "repo_path": req.repo_path,
+                "created": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+        # Rewrite meta.json with the real numbers, so the Library can show them.
+        (proj / "meta.json").write_text(json.dumps(info, indent=2))
         return {"path": str(out), "project": str(proj), "scenes": len(scenes),
-                "duration": round(total, 2), "voice": v.get("name", req.voice_id)}
+                "duration": round(total, 2), "voice": info["voice"],
+                "title": title, "theme": req.theme, "aspect": req.aspect,
+                "has_hook": hook is not None, "has_close": close is not None}
 
     _run(jid, work)
     return {"job_id": jid}
+
+
+@app.get("/library")
+def library(limit: int = 40):
+    """Every demo this machine has rendered, newest first."""
+    out = []
+    for d in sorted(OUTPUT_DIR.iterdir(), reverse=True) if OUTPUT_DIR.exists() else []:
+        if not d.is_dir():
+            continue
+        mp4 = d / "demo.mp4"
+        if not mp4.is_file():
+            continue
+        meta = {}
+        try:
+            meta = json.loads((d / "meta.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        st = mp4.stat()
+        out.append({
+            "id": d.name,
+            "name": meta.get("name") or d.name.rsplit("-", 2)[0].replace("-", " ").title(),
+            "subtitle": meta.get("subtitle", ""),
+            "path": str(mp4),
+            "project": str(d),
+            "bytes": st.st_size,
+            "scenes": int(meta.get("scenes") or 0),
+            "duration": float(meta.get("duration") or 0),
+            "voice": meta.get("voice", ""),
+            "theme": meta.get("theme", ""),
+            "aspect": meta.get("aspect", ""),
+            "has_hook": bool(meta.get("has_hook")),
+            "has_close": bool(meta.get("has_close")),
+            "created": meta.get("created") or datetime.fromtimestamp(
+                st.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+        })
+        if len(out) >= limit:
+            break
+    return {"demos": out}
+
+
+@app.delete("/library/{demo_id}")
+def delete_demo(demo_id: str):
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", demo_id or ""):
+        raise HTTPException(400, "bad demo id")
+    d = (OUTPUT_DIR / demo_id).resolve()
+    try:
+        d.relative_to(OUTPUT_DIR.resolve())
+    except ValueError:
+        raise HTTPException(400, "bad demo id")
+    if not d.is_dir():
+        raise HTTPException(404, f"no demo {demo_id!r}")
+    shutil.rmtree(d)
+    return {"deleted": demo_id}
 
 
 @app.get("/jobs/{jid}")
@@ -632,6 +782,46 @@ def unhandled(request, exc):
     return JSONResponse(status_code=500, content={"detail": f"{type(exc).__name__}: {exc}"})
 
 
+def _watch_parent(interval: float = 1.0) -> None:
+    """Leave when the app that spawned us is gone.
+
+    The app owns this process, but macOS does not guarantee it gets to say so: a
+    SIGTERM to a Cocoa app (or a crash, or a force-quit) kills it without running
+    applicationWillTerminate, and this child is left holding the port and several
+    GB of weights. The next launch then fails to bind, dies, and the app goes on
+    talking to the orphan — which answers /health perfectly while being unable to
+    reach the model server. That surfaces as "oMLX refused the connection", so the
+    user re-types a correct API key over and over.
+
+    The app passes its pid in VOXDEMO_PARENT_PID. Absent (a hand-run server), we
+    watch nothing and behave as before.
+    """
+    raw = os.environ.get("VOXDEMO_PARENT_PID", "")
+    if not raw.isdigit():
+        return
+    parent = int(raw)
+
+    def gone() -> bool:
+        try:
+            os.kill(parent, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        # Reparenting to launchd is the same event seen from the other side, and
+        # it also covers pid reuse — getppid() cannot be fooled by it.
+        return os.getppid() != parent
+
+    while not gone():
+        time.sleep(interval)
+    print(f"[voxdemo] parent {parent} is gone — shutting down", flush=True)
+    # _exit, not sys.exit: uvicorn may be mid-request holding the GIL, and a
+    # graceful shutdown there can take as long as the request. The listening
+    # socket is closed by the kernel either way, which is the whole point.
+    os._exit(0)
+
+
 if __name__ == "__main__":
     print(f"[voxdemo] serving on 127.0.0.1:{PORT} (dry_run={DRY_RUN})", flush=True)
+    threading.Thread(target=_watch_parent, daemon=True, name="parent-watch").start()
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

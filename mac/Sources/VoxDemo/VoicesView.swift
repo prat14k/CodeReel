@@ -103,179 +103,172 @@ struct VoicesView: View {
     @State private var importedFile: URL?
     @State private var picking = false
     @State private var busy = false
-    @State private var error: String?
+    @State private var saveError = ""
+    @State private var previewError = ""
 
     @State private var sampleText = "This is how I sound. Ready whenever you are."
     @State private var previewing: String?
     @State private var lastPreview: URL?
+    @State private var lastPreviewName = ""
 
     private var source: URL? { importedFile ?? recorder.url }
+    private var presets: [Voice] { engine.voices.filter(\.isPreset) }
+    private var cloned: [Voice] { engine.voices.filter { !$0.isPreset } }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                library
+            VStack(alignment: .leading, spacing: 16) {
+                previewCard
+                if !cloned.isEmpty { clonedSection }
+                presetSection
                 cloneCard
                 Text("Cloning a real person's voice needs their consent. Label AI-generated audio.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(20)
+            .padding(22)
+            .frame(maxWidth: 900)
+            .frame(maxWidth: .infinity)
         }
-        .alert("Something went wrong", isPresented: .init(
-            get: { error != nil }, set: { if !$0 { error = nil } })
-        ) {
-            Button("OK") { error = nil }
-        } message: { Text(error ?? "") }
     }
 
-    // MARK: library
+    // MARK: preview
 
-    private var library: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Voice library").font(.title3.bold())
-                Spacer()
-                TextField("Preview line", text: $sampleText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 320)
-            }
-            if engine.voices.isEmpty {
-                Text("Waiting for the engine…").foregroundStyle(.secondary)
-            }
-            if let lastPreview {
-                AudioPlayerBar(url: lastPreview, autoplay: true)
-                    .frame(height: 40)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            ForEach(engine.voices) { voice in
-                HStack(spacing: 12) {
-                    Image(systemName: voice.isPreset ? "person.wave.2" : "person.crop.circle.badge.checkmark")
-                        .foregroundStyle(voice.isPreset ? Color.secondary : Color.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 6) {
-                            Text(voice.name).fontWeight(.medium)
-                            Text(voice.isPreset ? "PRESET" : "CLONED")
-                                .font(.caption2.bold())
-                                .padding(.horizontal, 5).padding(.vertical, 1)
-                                .background(.quaternary, in: Capsule())
-                            if !voice.enrolled {
-                                Text("not yet voiced").font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                        Text(voice.description).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if previewing == voice.id {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Button("Preview") { preview(voice) }
-                            .disabled(engine.health?.ready != true || previewing != nil)
-                    }
-                    if !voice.isPreset {
-                        Button(role: .destructive) { remove(voice) } label: {
-                            Image(systemName: "trash")
-                        }
-                        .buttonStyle(.borderless)
+    private var previewCard: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionTitle(title: "Hear a voice",
+                             subtitle: "Every voice speaks through a reference clip, so timbre is "
+                                     + "stable across scenes and sessions.")
+                HStack(spacing: 10) {
+                    TextField("Line to speak", text: $sampleText)
+                        .textFieldStyle(.roundedBorder)
+                    if !lastPreviewName.isEmpty {
+                        Text(lastPreviewName).font(.caption).foregroundStyle(.secondary)
+                            .frame(width: 90, alignment: .trailing)
                     }
                 }
-                .padding(.vertical, 6)
-                Divider()
+                if let lastPreview {
+                    AudioPlayerBar(url: lastPreview, autoplay: true)
+                        .frame(height: 38)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                if engine.health?.ready != true {
+                    Notice(icon: "hourglass", title: "Waiting for the engine",
+                           detail: "The voice model loads once per launch.", tint: .orange)
+                }
+                if !previewError.isEmpty {
+                    Text(previewError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                }
             }
         }
-        .card()
     }
 
-    private func preview(_ voice: Voice) {
-        previewing = voice.id
-        Task {
-            defer { previewing = nil }
-            do {
-                let r: SpeakResult = try await API.run(
-                    "/speak",
-                    ["voice_id": voice.id, "text": sampleText] as [String: String],
-                    onStep: { _, _ in })
-                lastPreview = URL(fileURLWithPath: r.path)
-                await engine.refreshVoices()
-            } catch { self.error = error.localizedDescription }
+    // MARK: lists
+
+    private var presetSection: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionTitle(title: "Presets",
+                             subtitle: "Voice-design personas. The first use designs the voice; "
+                                     + "that clip becomes its permanent reference.")
+                ForEach(presets) { v in
+                    VoiceRow(voice: v, previewing: previewing,
+                             ready: engine.health?.ready == true,
+                             onPreview: { preview(v) }, onDelete: nil)
+                }
+            }
         }
     }
 
-    private func remove(_ voice: Voice) {
-        Task {
-            do {
-                let _: Deleted = try await API.delete("/voices/\(voice.id)")
-                await engine.refreshVoices()
-            } catch { self.error = error.localizedDescription }
+    private var clonedSection: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                SectionTitle(title: "Your voices", subtitle: "Cloned from a recording or a file.")
+                ForEach(cloned) { v in
+                    VoiceRow(voice: v, previewing: previewing,
+                             ready: engine.health?.ready == true,
+                             onPreview: { preview(v) }, onDelete: { remove(v) })
+                }
+            }
         }
     }
 
     // MARK: clone
 
     private var cloneCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Clone a voice").font(.title3.bold())
-            Text("Record or import 5–15 seconds of clean, single-speaker speech.")
-                .font(.caption).foregroundStyle(.secondary)
+        Card {
+            VStack(alignment: .leading, spacing: 14) {
+                SectionTitle(title: "Clone a voice",
+                             subtitle: "Record or import 5–15 seconds of clean, single-speaker speech.")
 
-            TextField("Voice name", text: $newName)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 320)
+                HStack(spacing: 12) {
+                    TextField("Voice name", text: $newName)
+                        .textFieldStyle(.roundedBorder).frame(width: 240)
 
-            HStack(spacing: 14) {
-                Button {
-                    importedFile = nil
-                    Task { await recorder.toggle() }
-                } label: {
-                    Label(recorder.isRecording ? "Stop recording" : "Record",
-                          systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.circle.fill")
-                }
-                .tint(recorder.isRecording ? .red : .accentColor)
-
-                if recorder.isRecording {
-                    ProgressView(value: Double(recorder.level))
-                        .frame(width: 120)
-                    Text(String(format: "%.1fs", recorder.elapsed))
-                        .monospacedDigit().foregroundStyle(.secondary)
-                }
-
-                Text("or").foregroundStyle(.secondary)
-                Button("Choose audio file…") { picking = true }
-            }
-
-            if let source, !recorder.isRecording {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "waveform.circle.fill").foregroundStyle(Color.green)
-                        Text(source.lastPathComponent).lineLimit(1)
-                        if recorder.url != nil && importedFile == nil {
-                            Text(String(format: "%.1fs", recorder.elapsed))
-                                .foregroundStyle(.secondary).monospacedDigit()
-                        }
-                        Spacer()
-                        Button("Clear") { recorder.discard(); importedFile = nil }
-                            .buttonStyle(.borderless)
+                    Button {
+                        importedFile = nil
+                        Task { await recorder.toggle() }
+                    } label: {
+                        Label(recorder.isRecording ? "Stop recording" : "Record",
+                              systemImage: recorder.isRecording ? "stop.circle.fill" : "mic.circle.fill")
                     }
-                    .font(.callout)
-                    AudioPlayerBar(url: source)
-                        .frame(height: 40)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-            }
+                    .tint(recorder.isRecording ? .red : Palette.accent)
 
-            HStack {
-                Button {
-                    save()
-                } label: {
-                    if busy { ProgressView().controlSize(.small) } else { Text("Clone & save voice") }
+                    if recorder.isRecording {
+                        ProgressView(value: Double(recorder.level)).frame(width: 110)
+                        Text(String(format: "%.1fs", recorder.elapsed))
+                            .monospacedDigit().foregroundStyle(.secondary)
+                    }
+
+                    Text("or").font(.caption).foregroundStyle(.tertiary)
+                    Button("Choose file…") { picking = true }
+                    Spacer()
                 }
-                .keyboardShortcut(.defaultAction)
-                .disabled(busy || source == nil || newName.trimmingCharacters(in: .whitespaces).isEmpty)
-                if let problem = recorder.problem {
-                    Text(problem).font(.caption).foregroundStyle(Color.red)
+
+                if let source, !recorder.isRecording {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 9) {
+                            Image(systemName: "waveform.circle.fill").foregroundStyle(Palette.good)
+                            Text(source.lastPathComponent).font(.callout).lineLimit(1)
+                            if recorder.url != nil && importedFile == nil {
+                                Text(String(format: "%.1fs", recorder.elapsed))
+                                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                            }
+                            Spacer()
+                            Button("Clear") { recorder.discard(); importedFile = nil }
+                                .buttonStyle(.borderless).controlSize(.small)
+                        }
+                        AudioPlayerBar(url: source)
+                            .frame(height: 34)
+                            .clipShape(RoundedRectangle(cornerRadius: 7))
+                    }
+                }
+
+                HStack(spacing: 12) {
+                    Button {
+                        save()
+                    } label: {
+                        HStack(spacing: 7) {
+                            if busy { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "person.crop.circle.badge.plus") }
+                            Text("Clone & save voice")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(busy || source == nil
+                              || newName.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                    if let problem = recorder.problem {
+                        Text(problem).font(.caption).foregroundStyle(.red).lineLimit(2)
+                    }
+                    if !saveError.isEmpty {
+                        Text(saveError).font(.caption).foregroundStyle(.red).lineLimit(2)
+                    }
+                    Spacer()
                 }
             }
         }
-        .card()
         .fileImporter(isPresented: $picking, allowedContentTypes: [.audio]) { result in
             if case .success(let url) = result {
                 recorder.discard()
@@ -284,9 +277,38 @@ struct VoicesView: View {
         }
     }
 
+    // MARK: actions
+
+    private func preview(_ voice: Voice) {
+        previewing = voice.id
+        previewError = ""
+        Task {
+            defer { previewing = nil }
+            do {
+                let r: SpeakResult = try await API.run(
+                    "/speak",
+                    ["voice_id": voice.id, "text": sampleText] as [String: String],
+                    onStep: { _, _ in })
+                lastPreview = URL(fileURLWithPath: r.path)
+                lastPreviewName = r.voice
+                await engine.refreshVoices()
+            } catch { previewError = error.localizedDescription }
+        }
+    }
+
+    private func remove(_ voice: Voice) {
+        Task {
+            do {
+                let _: Deleted = try await API.delete("/voices/\(voice.id)")
+                await engine.refreshVoices()
+            } catch { engine.lastError = error.localizedDescription }
+        }
+    }
+
     private func save() {
         guard let source else { return }
         busy = true
+        saveError = ""
         Task {
             defer { busy = false }
             do {
@@ -297,7 +319,53 @@ struct VoicesView: View {
                 newName = ""
                 recorder.discard()
                 importedFile = nil
-            } catch { self.error = error.localizedDescription }
+            } catch { saveError = error.localizedDescription }
         }
+    }
+}
+
+private struct VoiceRow: View {
+    let voice: Voice
+    let previewing: String?
+    let ready: Bool
+    let onPreview: () -> Void
+    let onDelete: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(Palette.accentSoft).frame(width: 30, height: 30)
+                Image(systemName: voice.isPreset ? "person.wave.2" : "person.crop.circle.badge.checkmark")
+                    .font(.system(size: 13))
+                    .foregroundStyle(voice.isPreset ? Palette.accent : Palette.good)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(voice.name).font(.callout.weight(.medium))
+                    Chip(text: voice.isPreset ? "PRESET" : "CLONED",
+                         color: voice.isPreset ? .secondary : Palette.good)
+                    if !voice.enrolled {
+                        Text("not yet voiced").font(.caption2).foregroundStyle(.tertiary)
+                    }
+                }
+                Text(voice.description).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            if previewing == voice.id {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Preview", action: onPreview)
+                    .controlSize(.small)
+                    .disabled(!ready || previewing != nil)
+            }
+            if let onDelete {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless).controlSize(.small)
+            }
+        }
+        .padding(.vertical, 5)
+        Divider().opacity(0.5)
     }
 }
