@@ -95,8 +95,8 @@ COMMON_PORTS = [(8000, "oMLX / vLLM"), (11434, "Ollama"), (1234, "LM Studio"),
                 (8080, "llama.cpp"), (8001, "vLLM"), (5000, "text-gen-webui"),
                 (3000, "LocalAI"), (8081, "Jan")]
 
-CLAUDE_MODEL = os.environ.get("VOXDEMO_CLAUDE_MODEL", "sonnet")
-ANALYZE_TIMEOUT = int(os.environ.get("VOXDEMO_ANALYZE_TIMEOUT", "600"))
+CLAUDE_MODEL = os.environ.get("CODEREEL_CLAUDE_MODEL", os.environ.get("VOXDEMO_CLAUDE_MODEL", "sonnet"))
+ANALYZE_TIMEOUT = int(os.environ.get("CODEREEL_ANALYZE_TIMEOUT", os.environ.get("VOXDEMO_ANALYZE_TIMEOUT", "600")))
 
 VISUAL_KINDS = ("screenshot", "code", "tree", "stats", "stack",
                 "terminal", "diagram", "mesh")
@@ -572,7 +572,7 @@ def _repair(frag: str) -> str:
 # ------------------------------------------------------------------ claude cli
 
 def claude_bin() -> str:
-    override = os.environ.get("VOXDEMO_CLAUDE")
+    override = os.environ.get("CODEREEL_CLAUDE", os.environ.get("VOXDEMO_CLAUDE"))
     if override and Path(override).is_file():
         return override
     path = os.pathsep.join([os.environ.get("PATH", ""), str(Path.home() / ".local" / "bin"),
@@ -581,7 +581,7 @@ def claude_bin() -> str:
     if not found:
         raise ProviderError(
             "Claude Code CLI not found. Install it, pick a local model instead, or set "
-            "VOXDEMO_CLAUDE to the full path of the `claude` binary.")
+            "CODEREEL_CLAUDE to the full path of the `claude` binary.")
     return found
 
 

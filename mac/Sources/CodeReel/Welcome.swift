@@ -21,7 +21,7 @@ struct WelcomeSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Turn a repository into a narrated demo")
                         .font(.title2.weight(.semibold))
-                    Text("VoxDemo reads the code, writes the script, speaks it and renders the video — "
+                    Text("CodeReel reads the code, writes the script, speaks it and renders the video — "
                          + "all on this machine.")
                         .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -41,7 +41,7 @@ struct WelcomeSheet: View {
                      "Eight presets, or clone your own from a short recording. Every scene speaks "
                      + "in the same voice.")
                 step(4, "play.rectangle", "Render",
-                     "A narrated MP4 lands in ~/Movies/VoxDemo with its HyperFrames project beside "
+                     "A narrated MP4 lands in ~/Movies/CodeReel with its HyperFrames project beside "
                      + "it, ready to keep editing.")
             }
 

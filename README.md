@@ -1,4 +1,4 @@
-# VoxDemo
+# CodeReel
 
 A macOS app that turns a local repository into a narrated demo video. It reads the code,
 writes the script, speaks it in a cloned voice and renders the MP4 — all on-device.
@@ -6,7 +6,7 @@ writes the script, speaks it in a cloned voice and renders the MP4 — all on-de
 speaks. No account, no API key, no upload.
 
 ```
-mac/            SwiftUI app (VoxDemo.app)
+mac/            SwiftUI app (CodeReel.app)
 server.py       localhost sidecar: script writing + VoxCPM2 voices + render jobs
 providers.py    script writing: the Claude Code CLI, or any OpenAI-compatible model
 repocontext.py  reads a repo into a digest that a tool-less model can work from
@@ -21,11 +21,11 @@ app.py          the original Gradio playground (still works, unchanged)
 uv venv --python 3.12 .venv
 uv pip install --python .venv/bin/python voxcpm soundfile gradio fastapi uvicorn
 mac/build.sh
-open mac/build/VoxDemo.app
+open mac/build/CodeReel.app
 ```
 
 The app launches `server.py` itself. First launch loads ~5 GB of voice weights (already
-cached here). Output lands in `~/Movies/VoxDemo/<demo>-<stamp>/` — `demo.mp4` plus the full
+cached here). Output lands in `~/Movies/CodeReel/<demo>-<stamp>/` — `demo.mp4` plus the full
 HyperFrames project next to it, so you can open it in HyperFrames Studio
 (`cd <project> && npx hyperframes preview`) and keep editing by hand.
 
@@ -43,7 +43,7 @@ Presets ship for the common runners and **Find local servers** probes the usual 
 
 ### How a local model reads a repo
 
-A chat endpoint has no file tools, so VoxDemo does the reading itself. `repocontext.py`
+A chat endpoint has no file tools, so CodeReel does the reading itself. `repocontext.py`
 walks the tree, ranks every file — README and manifests first, then entry points, then
 source by substance — and emits a digest that fits a character budget (48k by default,
 which sits comfortably inside a 32k-token window). It also inventories every image with
@@ -101,7 +101,7 @@ already ships, so nothing can go missing at render time.
 | | |
 |---|---|
 | **8 presets** | Aria, Nolan, Sable, Kit, Juniper, Atlas, Wren, Rio. These are *voice-design* personas, not recordings: the first time you use one, VoxCPM designs it from its description, and that clip becomes the preset's permanent reference. Same voice on every scene, every session. |
-| **Cloning** | Record with the mic or import a file (5–15 s, clean, single speaker) → saved to the voice library at `~/Library/Application Support/VoxDemo/voices/`. |
+| **Cloning** | Record with the mic or import a file (5–15 s, clean, single speaker) → saved to the voice library at `~/Library/Application Support/CodeReel/voices/`. |
 
 Every voice — preset or cloned — speaks through a reference clip, so timbre is stable across
 scenes. Style direction ("cheerful, slightly faster") is available under Advanced. Presets are
@@ -122,7 +122,7 @@ Measured on this M5 Pro (MPS, float32). Generation is ~1.4× real time — a 2.5
 | Ultimate Cloning (reference + transcript) | **47 s**, and it returns the prompt read back *plus* the line — 12.2 s of audio for a 2.5 s request. Wrong output, 12× the cost. |
 | Plain reference cloning | **3.8 s**, correct. |
 
-So VoxDemo loads with `load_denoiser=False` and only ever uses reference cloning. Previews now
+So CodeReel loads with `load_denoiser=False` and only ever uses reference cloning. Previews now
 land in 3–6 s. If you want denoising back, clean the clip once before importing it — a one-shot
 `ffmpeg -af afftdn` or any editor beats 7 minutes of ZipEnhancer per generation.
 
@@ -145,11 +145,11 @@ Two things worth knowing:
 - **Telemetry is on by default.** HyperFrames sends anonymous usage data (not file paths or
   composition content). Turn it off with `npx hyperframes telemetry disable`.
 - **An account is only for sharing.** `hyperframes publish` (hosted links) and their cloud/Lambda
-  renderers want a HeyGen sign-in. Nothing in VoxDemo touches either.
+  renderers want a HeyGen sign-in. Nothing in CodeReel touches either.
 
 Optional, not required:
 
-- `brew install whisper-cpp` — real word-level caption timing. VoxDemo currently spaces captions
+- `brew install whisper-cpp` — real word-level caption timing. CodeReel currently spaces captions
   by character weight across each scene's measured narration length, which drifts a little inside
   a long sentence.
 - Docker — only for HyperFrames' containerized render path. Unused.
@@ -188,7 +188,7 @@ four-step flow — Source, Script, Look, Render — and you can jump to any step
 .venv/bin/python contract_check.py          # every endpoint matches the Swift wire types
 swift mac/timer-check.swift                 # why the record timer read 0.0s, and that the fix ticks
 .venv/bin/python server.py --dry-run        # API without loading the model
-mac/make-icon.sh                            # regenerate VoxDemo.icns (only if the artwork changes)
+mac/make-icon.sh                            # regenerate CodeReel.icns (only if the artwork changes)
 ```
 
 `contract_check.py` earns its place: Swift's synthesized `Decodable` throws on a missing key
@@ -198,12 +198,13 @@ anything the client would choke on.
 
 ## Config
 
-Settings live at `~/Library/Application Support/VoxDemo/settings.json` (0600 — it holds an API
+Settings live at `~/Library/Application Support/CodeReel/settings.json` (0600 — it holds an API
 key) and are editable in the app. Environment overrides:
 
-`VOXCPM_MODEL_ID` · `VOXCPM_DEVICE` (`auto|cpu|mps|cuda`) · `VOXDEMO_PORT` (8809) ·
-`VOXDEMO_HOME` · `VOXDEMO_OUTPUT` · `HYPERFRAMES_VERSION` · `VOXDEMO_CLAUDE` ·
-`VOXDEMO_CLAUDE_MODEL` · `VOXDEMO_ANALYZE_TIMEOUT` (600 s)
+`VOXCPM_MODEL_ID` · `VOXCPM_DEVICE` (`auto|cpu|mps|cuda`) · `CODEREEL_PORT` (8809) ·
+`CODEREEL_HOME` · `CODEREEL_OUTPUT` · `HYPERFRAMES_VERSION` · `CODEREEL_CLAUDE` ·
+`CODEREEL_CLAUDE_MODEL` · `CODEREEL_ANALYZE_TIMEOUT` (600 s)
+*(Legacy `VOXDEMO_*` environment variables remain supported as fallbacks).*
 
 ## Misuse
 

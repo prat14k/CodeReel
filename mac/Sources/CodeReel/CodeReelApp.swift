@@ -24,7 +24,7 @@ final class Engine {
 
     private var process: Process?
     private var logHandle: FileHandle?
-    let logURL = FileManager.default.temporaryDirectory.appendingPathComponent("voxdemo-engine.log")
+    let logURL = FileManager.default.temporaryDirectory.appendingPathComponent("codereel-engine.log")
 
     // ponytail: the repo is the app's payload — path is remembered, not embedded.
     // Default is wherever this source tree lived at build time.
@@ -60,7 +60,7 @@ final class Engine {
             let free = API.freePort(from: wanted + 1)
             API.port = free
             portNote = "Port \(wanted) was already in use, so the engine is on \(free). "
-                     + "Another copy of VoxDemo may still be running."
+                     + "Another copy of CodeReel may still be running."
         } else {
             API.port = wanted
             portNote = ""
@@ -78,10 +78,12 @@ final class Engine {
         p.arguments = [serverScript]
         p.currentDirectoryURL = URL(fileURLWithPath: repoPath)
         var env = ProcessInfo.processInfo.environment
+        env["CODEREEL_PORT"] = String(API.port)
         env["VOXDEMO_PORT"] = String(API.port)
         // The sidecar watches this pid and exits when it disappears. We cannot
         // promise to clean up after ourselves — a force-quit or a crash skips
         // applicationWillTerminate entirely — so the child is made responsible.
+        env["CODEREEL_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         env["VOXDEMO_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + (env["PATH"] ?? "/usr/bin:/bin")
         p.environment = env
@@ -601,20 +603,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Snapshots.runIfRequested()
     }
     /// Cmd-Q and a scripted quit land here. A `kill` on the app does not — which
-    /// is why the sidecar also watches us from the inside (VOXDEMO_PARENT_PID).
+    /// is why the sidecar also watches us from the inside (CODEREEL_PARENT_PID).
     func applicationWillTerminate(_ notification: Notification) { engine?.stopAndWait() }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
 }
 
 @main
-struct VoxDemoApp: App {
+struct CodeReelApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var engine = Engine()
     @State private var watcher: Task<Void, Never>?
     @State private var store = CreateStore()
 
     var body: some Scene {
-        Window("VoxDemo", id: "main") {
+        Window("CodeReel", id: "main") {
             RootView()
                 .environment(engine)
                 .environment(store)

@@ -2,9 +2,9 @@
 import PackageDescription
 
 let package = Package(
-    name: "VoxDemo",
+    name: "CodeReel",
     platforms: [.macOS(.v14)],
     targets: [
-        .executableTarget(name: "VoxDemo", path: "Sources/VoxDemo")
+        .executableTarget(name: "CodeReel", path: "Sources/CodeReel")
     ]
 )

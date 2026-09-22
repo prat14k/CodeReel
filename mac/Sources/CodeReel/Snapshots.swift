@@ -18,23 +18,25 @@ import SwiftUI
 /// which is how we know an empty sidebar here says nothing about the app. Button
 /// bezels and materials are unreliable for the same reason.
 ///
-/// Enable with `VOXDEMO_SNAPSHOT=<dir>`; the app writes PNGs there and exits.
+/// Enable with `CODEREEL_SNAPSHOT=<dir>` or `VOXDEMO_SNAPSHOT=<dir>`; the app writes PNGs there and exits.
 @MainActor
 enum Snapshots {
 
     static func runIfRequested() {
-        if ProcessInfo.processInfo.environment["VOXDEMO_PROBE"] != nil {
+        if ProcessInfo.processInfo.environment["CODEREEL_PROBE"] != nil
+            || ProcessInfo.processInfo.environment["VOXDEMO_PROBE"] != nil {
             probe()
             exit(0)
         }
-        guard let dir = ProcessInfo.processInfo.environment["VOXDEMO_SNAPSHOT"] else { return }
+        guard let dir = ProcessInfo.processInfo.environment["CODEREEL_SNAPSHOT"]
+            ?? ProcessInfo.processInfo.environment["VOXDEMO_SNAPSHOT"] else { return }
         run(into: URL(fileURLWithPath: dir))
         exit(0)
     }
 
     /// Drives the three Settings buttons through the app's own `Engine` and `API`,
     /// so a failure shows up here with its real message instead of as a dialog
-    /// nobody can read. `VOXDEMO_PROBE=1`.
+    /// nobody can read. `CODEREEL_PROBE=1`.
     static func probe() {
         let sem = DispatchSemaphore(value: 0)
         Task { @MainActor in
@@ -138,8 +140,8 @@ enum Snapshots {
                 store.progress = 1
                 store.stage = "done"
                 store.result = DemoResult(
-                    path: "/Users/prat14k/Movies/VoxDemo/voxcpm-20260918-162226/demo.mp4",
-                    project: "/Users/prat14k/Movies/VoxDemo/voxcpm-20260918-162226",
+                    path: "/Users/prat14k/Movies/CodeReel/voxcpm-20260918-162226/demo.mp4",
+                    project: "/Users/prat14k/Movies/CodeReel/voxcpm-20260918-162226",
                     scenes: 5, duration: 60.0, voice: "Aria", title: "VoxCPM",
                     theme: "midnight", aspect: "landscape", has_hook: true, has_close: true)
             }
@@ -243,7 +245,8 @@ enum Snapshots {
     }
 
     private static let out = URL(fileURLWithPath:
-        ProcessInfo.processInfo.environment["VOXDEMO_SNAPSHOT"] ?? "/tmp")
+        ProcessInfo.processInfo.environment["CODEREEL_SNAPSHOT"]
+        ?? ProcessInfo.processInfo.environment["VOXDEMO_SNAPSHOT"] ?? "/tmp")
 
     // MARK: - Sample state
 
@@ -253,7 +256,7 @@ enum Snapshots {
         e.health = Health(
             ready: true, loading: false, error: "", warm: "", dry_run: false,
             model: "openbmb/VoxCPM2", device: "mps", sample_rate: 48000,
-            output_dir: "/Users/prat14k/Movies/VoxDemo",
+            output_dir: "/Users/prat14k/Movies/CodeReel",
             themes: ["midnight", "ember", "neon", "studio"],
             aspects: ["landscape", "portrait", "square"],
             theme_labels: ["midnight": "Midnight", "ember": "Ember",
@@ -305,7 +308,7 @@ enum Snapshots {
                                      local: false, key_required: true, note: "Hosted"),
             ],
             claude_available: true,
-            output_dir: "/Users/prat14k/Movies/VoxDemo")
+            output_dir: "/Users/prat14k/Movies/CodeReel")
         return e
     }
 
@@ -322,7 +325,7 @@ enum Snapshots {
             title: "VoxCPM",
             subtitle: "local developers",
             hook: "You're tired of uploading your code to a stranger's server.",
-            logo: "/Users/prat14k/Office/VoxCPM/mac/VoxDemo.icns",
+            logo: "/Users/prat14k/Office/VoxCPM/mac/CodeReel.icns",
             scenes: [
                 AnalyzeScene(heading: "The Upload Trap", role: "Problem",
                              media: "", text: "Every demo tool wants your repo on their "

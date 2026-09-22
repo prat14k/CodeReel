@@ -45,7 +45,7 @@ private struct Footer: View {
             Spacer()
             switch step {
             case .source:
-                Text("Point VoxDemo at a repository, or skip straight to the script.")
+                Text("Point CodeReel at a repository, or skip straight to the script.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Skip to script") {
                     if store.scenes.isEmpty { store.scenes = [SceneDraft()] }
@@ -106,7 +106,7 @@ private struct SourceStep: View {
         Card {
             VStack(alignment: .leading, spacing: 14) {
                 SectionTitle(title: "Repository",
-                             subtitle: "VoxDemo reads it to write the script and to pull real visuals.")
+                             subtitle: "CodeReel reads it to write the script and to pull real visuals.")
 
                 HStack(spacing: 10) {
                     Image(systemName: "folder")

@@ -270,7 +270,7 @@ enum VisualKind: String, CaseIterable, Identifiable {
 
     var blurb: String {
         switch self {
-        case .auto: return "Let VoxDemo choose from what the repo has."
+        case .auto: return "Let CodeReel choose from what the repo has."
         case .screenshot: return "A real screenshot from the repo, with a slow push."
         case .code: return "A source file as a highlighted code card."
         case .tree: return "The project's file structure, revealed line by line."

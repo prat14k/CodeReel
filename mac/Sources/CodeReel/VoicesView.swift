@@ -23,12 +23,12 @@ final class Recorder {
         // to main — a Timer scheduled off-main is never added to a run loop and
         // silently never fires, which is why the elapsed counter sat at 0.0s.
         guard await AVCaptureDevice.requestAccess(for: .audio) else {
-            await fail("Microphone access denied. Enable VoxDemo in System Settings > "
+            await fail("Microphone access denied. Enable CodeReel in System Settings > "
                        + "Privacy & Security > Microphone, then press Record again.")
             return
         }
         let out = FileManager.default.temporaryDirectory
-            .appendingPathComponent("voxdemo-rec-\(Int(Date().timeIntervalSince1970)).wav")
+            .appendingPathComponent("codereel-rec-\(Int(Date().timeIntervalSince1970)).wav")
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatLinearPCM),
             AVSampleRateKey: 48000,

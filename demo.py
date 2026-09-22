@@ -757,7 +757,7 @@ def _selfcheck() -> None:
     assert split_scenes("") == []
     assert auto_heading("hello there general kenobi") == "hello there general kenobi"
     assert initials("Agent Island") == "AI"
-    assert initials("VoxDemo") == "VO"
+    assert initials("CodeReel") == "CO"
     assert initials("") == "•"
     assert auto_heading("It turns a script into a narrated demo, locally.") == "It turns a script into a narrated demo"
     assert heading_size("Short") == 88 and heading_size("x" * 80) == 52

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""VoxDemo sidecar — script writing, VoxCPM2 voices and HyperFrames rendering.
+"""CodeReel sidecar — script writing, VoxCPM2 voices and HyperFrames rendering.
 
 The macOS app spawns this and talks JSON to 127.0.0.1. Everything that can run
 on-device does: the TTS model, the repo reading, the video render.
@@ -40,14 +40,29 @@ import repocontext
 DRY_RUN = "--dry-run" in sys.argv
 MODEL_ID = os.environ.get("VOXCPM_MODEL_ID", "openbmb/VoxCPM2")
 DEVICE = os.environ.get("VOXCPM_DEVICE", "auto")
-PORT = int(os.environ.get("VOXDEMO_PORT", "8809"))
+PORT = int(os.environ.get("CODEREEL_PORT", os.environ.get("VOXDEMO_PORT", "8809")))
 
-SUPPORT = Path(os.environ.get(
-    "VOXDEMO_HOME", Path.home() / "Library" / "Application Support" / "VoxDemo"))
+
+def _resolve_support() -> Path:
+    override = os.environ.get("CODEREEL_HOME", os.environ.get("VOXDEMO_HOME"))
+    if override:
+        return Path(override)
+    modern = Path.home() / "Library" / "Application Support" / "CodeReel"
+    legacy = Path.home() / "Library" / "Application Support" / "VoxDemo"
+    if not modern.exists() and legacy.exists():
+        try:
+            shutil.copytree(legacy, modern)
+        except Exception:
+            return legacy
+    return modern
+
+
+SUPPORT = _resolve_support()
 VOICES_DIR = SUPPORT / "voices"
 CACHE_DIR = SUPPORT / "cache"
 SETTINGS_FILE = SUPPORT / "settings.json"
-OUTPUT_DIR = Path(os.environ.get("VOXDEMO_OUTPUT", Path.home() / "Movies" / "VoxDemo"))
+OUTPUT_DIR = Path(os.environ.get("CODEREEL_OUTPUT", os.environ.get("VOXDEMO_OUTPUT", Path.home() / "Movies" / "CodeReel")))
+LEGACY_OUTPUT_DIR = Path.home() / "Movies" / "VoxDemo"
 for d in (VOICES_DIR, CACHE_DIR, OUTPUT_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
@@ -74,7 +89,7 @@ PRESETS = [
     ("rio", "Rio", "a man with a lively storytelling cadence, warm and expressive"),
 ]
 
-ANALYZE_TIMEOUT = int(os.environ.get("VOXDEMO_ANALYZE_TIMEOUT", "600"))
+ANALYZE_TIMEOUT = int(os.environ.get("CODEREEL_ANALYZE_TIMEOUT", os.environ.get("VOXDEMO_ANALYZE_TIMEOUT", "600")))
 IMAGE_EXT = repocontext.IMAGE_EXT
 BUILD_DIRS = repocontext.IGNORE_DIRS
 
@@ -159,7 +174,7 @@ def repo_ctx(repo_path: str, max_age: float = 900) -> repocontext.RepoContext | 
     try:
         ctx = repocontext.scan(Path(key))
     except Exception as e:
-        print(f"[voxdemo] could not scan {key}: {e}", flush=True)
+        print(f"[codereel] could not scan {key}: {e}", flush=True)
         return None
     with _ctx_lock:
         _ctx_cache[key] = (time.time(), ctx)
@@ -217,11 +232,11 @@ def _load_model() -> None:
             optimize=(os.environ.get("VOXCPM_OPTIMIZE", "1") == "1"), device=DEVICE)
         SAMPLE_RATE = model.tts_model.sample_rate
         _state.update(ready=True, loading=False)
-        print(f"[voxdemo] model ready sample_rate={SAMPLE_RATE}", flush=True)
+        print(f"[codereel] model ready sample_rate={SAMPLE_RATE}", flush=True)
         threading.Thread(target=_warm_presets, daemon=True).start()
     except Exception as e:  # surfaced in /health so the app can show it
         _state.update(ready=False, loading=False, error=f"{type(e).__name__}: {e}")
-        print(f"[voxdemo] model load failed: {e}", flush=True)
+        print(f"[codereel] model load failed: {e}", flush=True)
 
 
 if not DRY_RUN:
@@ -240,7 +255,7 @@ def _warm_presets() -> None:
         try:
             ensure_enrolled(pid)
         except Exception as e:
-            print(f"[voxdemo] warming {pid} failed: {e}", flush=True)
+            print(f"[codereel] warming {pid} failed: {e}", flush=True)
     _state["warm"] = ""
 
 
@@ -373,7 +388,7 @@ def _step(jid: str, progress: float, message: str) -> None:
     j["progress"] = round(min(max(progress, 0.0), 1.0), 3)
     j["message"] = message
     j["log"] = (j["log"] + [message])[-80:]
-    print(f"[voxdemo] {jid} {j['progress']:.0%} {message}", flush=True)
+    print(f"[codereel] {jid} {j['progress']:.0%} {message}", flush=True)
 
 
 def _run(jid: str, fn, pool: ThreadPoolExecutor | None = None) -> None:
@@ -384,13 +399,13 @@ def _run(jid: str, fn, pool: ThreadPoolExecutor | None = None) -> None:
         except Exception as e:
             msg = str(getattr(e, "detail", None) or e)
             JOBS[jid].update(state="error", error=msg, message=msg[:400])
-            print(f"[voxdemo] {jid} failed: {e}", flush=True)
+            print(f"[codereel] {jid} failed: {e}", flush=True)
     (pool or _pool).submit(wrapped)
 
 
 # ---------------------------------------------------------------- api
 
-app = FastAPI(title="VoxDemo")
+app = FastAPI(title="CodeReel")
 
 
 class CloneReq(BaseModel):
@@ -720,12 +735,20 @@ def create_demo(req: DemoReq):
 def library(limit: int = 40):
     """Every demo this machine has rendered, newest first."""
     out = []
-    for d in sorted(OUTPUT_DIR.iterdir(), reverse=True) if OUTPUT_DIR.exists() else []:
-        if not d.is_dir():
+    seen = set()
+    dirs = []
+    if OUTPUT_DIR.exists():
+        dirs.extend(OUTPUT_DIR.iterdir())
+    if LEGACY_OUTPUT_DIR.exists() and LEGACY_OUTPUT_DIR.resolve() != OUTPUT_DIR.resolve():
+        dirs.extend(LEGACY_OUTPUT_DIR.iterdir())
+
+    for d in sorted(dirs, key=lambda p: p.name, reverse=True):
+        if not d.is_dir() or d.name in seen:
             continue
         mp4 = d / "demo.mp4"
         if not mp4.is_file():
             continue
+        seen.add(d.name)
         meta = {}
         try:
             meta = json.loads((d / "meta.json").read_text())
@@ -759,9 +782,21 @@ def delete_demo(demo_id: str):
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", demo_id or ""):
         raise HTTPException(400, "bad demo id")
     d = (OUTPUT_DIR / demo_id).resolve()
+    valid = False
     try:
         d.relative_to(OUTPUT_DIR.resolve())
+        valid = True
     except ValueError:
+        pass
+    if not valid and LEGACY_OUTPUT_DIR.exists():
+        d_legacy = (LEGACY_OUTPUT_DIR / demo_id).resolve()
+        try:
+            d_legacy.relative_to(LEGACY_OUTPUT_DIR.resolve())
+            d = d_legacy
+            valid = True
+        except ValueError:
+            pass
+    if not valid:
         raise HTTPException(400, "bad demo id")
     if not d.is_dir():
         raise HTTPException(404, f"no demo {demo_id!r}")
@@ -796,7 +831,7 @@ def _watch_parent(interval: float = 1.0) -> None:
     The app passes its pid in VOXDEMO_PARENT_PID. Absent (a hand-run server), we
     watch nothing and behave as before.
     """
-    raw = os.environ.get("VOXDEMO_PARENT_PID", "")
+    raw = os.environ.get("CODEREEL_PARENT_PID", os.environ.get("VOXDEMO_PARENT_PID", ""))
     if not raw.isdigit():
         return
     parent = int(raw)
@@ -814,7 +849,7 @@ def _watch_parent(interval: float = 1.0) -> None:
 
     while not gone():
         time.sleep(interval)
-    print(f"[voxdemo] parent {parent} is gone — shutting down", flush=True)
+    print(f"[codereel] parent {parent} is gone — shutting down", flush=True)
     # _exit, not sys.exit: uvicorn may be mid-request holding the GIL, and a
     # graceful shutdown there can take as long as the request. The listening
     # socket is closed by the kernel either way, which is the whole point.
@@ -822,6 +857,6 @@ def _watch_parent(interval: float = 1.0) -> None:
 
 
 if __name__ == "__main__":
-    print(f"[voxdemo] serving on 127.0.0.1:{PORT} (dry_run={DRY_RUN})", flush=True)
+    print(f"[codereel] serving on 127.0.0.1:{PORT} (dry_run={DRY_RUN})", flush=True)
     threading.Thread(target=_watch_parent, daemon=True, name="parent-watch").start()
     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")

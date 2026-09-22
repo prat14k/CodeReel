@@ -438,7 +438,7 @@ struct VisualPreview: View {
                     .blur(radius: 12).offset(x: -16, y: -6)
                 Circle().fill(Color(hex: "#39d3c0").opacity(0.4)).frame(width: 34)
                     .blur(radius: 12).offset(x: 18, y: 8)
-                Text(kind == .auto ? "VoxDemo picks" : "Abstract")
+                Text(kind == .auto ? "CodeReel picks" : "Abstract")
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.75))
             }

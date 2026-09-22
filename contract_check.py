@@ -76,7 +76,7 @@ def call(path, body=None, method=None, timeout=300):
 
 
 srv = subprocess.Popen([str(REPO / '.venv/bin/python'), 'server.py', '--dry-run'],
-                       cwd=REPO, env={**os.environ, 'VOXDEMO_PORT': str(PORT)},
+                       cwd=REPO, env={**os.environ, 'CODEREEL_PORT': str(PORT), 'VOXDEMO_PORT': str(PORT)},
                        stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
 try:
     for _ in range(60):

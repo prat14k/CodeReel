@@ -298,7 +298,7 @@ struct SettingsView: View {
 
                 Notice(icon: "info.circle",
                        title: "Local models have no file tools",
-                       detail: "VoxDemo walks your repo in Python, ranks the files and sends a digest. "
+                       detail: "CodeReel walks your repo in Python, ranks the files and sends a digest. "
                              + "48k characters fits comfortably in a 32k-token context. Raise it if your "
                              + "model has a bigger window.")
             }

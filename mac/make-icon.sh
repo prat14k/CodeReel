@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regenerate VoxDemo.icns from icon.svg.html.
+# Regenerate CodeReel.icns from icon.svg.html.
 #
 # The icon is checked in, so this only needs running when the artwork changes.
 # It renders the SVG with a headless Chrome — the one HyperFrames already
@@ -8,8 +8,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 SRC="icon.svg.html"
-PNG="${TMPDIR:-/tmp}/voxdemo-icon.png"
-ICONSET="${TMPDIR:-/tmp}/VoxDemo.iconset"
+PNG="${TMPDIR:-/tmp}/codereel-icon.png"
+ICONSET="${TMPDIR:-/tmp}/CodeReel.iconset"
 
 CHROME="$(find "$HOME/.cache/puppeteer/chrome-headless-shell" -type f \
           -name chrome-headless-shell 2>/dev/null | sort | tail -1 || true)"
@@ -36,5 +36,6 @@ sips -z 512 512   "$PNG" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
 sips -z 512 512   "$PNG" --out "$ICONSET/icon_512x512.png"    >/dev/null
 cp "$PNG"           "$ICONSET/icon_512x512@2x.png"
 
-iconutil -c icns "$ICONSET" -o VoxDemo.icns
-echo "wrote $(pwd)/VoxDemo.icns"
+iconutil -c icns "$ICONSET" -o CodeReel.icns
+cp -f CodeReel.icns VoxDemo.icns
+echo "wrote $(pwd)/CodeReel.icns"
