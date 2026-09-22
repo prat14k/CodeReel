@@ -1,42 +1,305 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><style>
-  html, body { margin:0; padding:0; width:1024px; height:1024px; background:transparent; }
-</style></head>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 1024px;
+    height: 1024px;
+    background: transparent;
+    overflow: hidden;
+  }
+</style>
+</head>
 <body>
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="g" x1="0.1" y1="0" x2="0.9" y2="1">
-      <stop offset="0"    stop-color="#9dacff"/>
-      <stop offset="0.48" stop-color="#7386f5"/>
-      <stop offset="1"    stop-color="#4a59e6"/>
+    <!-- macOS squircle drop shadow -->
+    <filter id="canvas-shadow" x="-15%" y="-15%" width="130%" height="135%">
+      <feDropShadow dx="0" dy="24" stdDeviation="32" flood-color="#05060e" flood-opacity="0.68" />
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#000000" flood-opacity="0.45" />
+    </filter>
+
+    <!-- Playhead neon glow -->
+    <filter id="neon-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="18" result="blur1" />
+      <feGaussianBlur stdDeviation="36" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur2" />
+        <feMergeNode in="blur1" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+
+    <!-- Subtle panel blur shadow -->
+    <filter id="panel-shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#000000" flood-opacity="0.55" />
+    </filter>
+
+    <!-- Canvas background gradient: rich obsidian to deep cinematic indigo -->
+    <linearGradient id="bg-grad" x1="0.1" y1="0.05" x2="0.85" y2="0.95">
+      <stop offset="0%" stop-color="#181c2e" />
+      <stop offset="35%" stop-color="#121524" />
+      <stop offset="70%" stop-color="#0c0e18" />
+      <stop offset="100%" stop-color="#07080f" />
     </linearGradient>
-    <radialGradient id="hl" cx="0.3" cy="0.14" r="0.85">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.34"/>
-      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+
+    <!-- Top specular highlight -->
+    <radialGradient id="top-highlight" cx="0.45" cy="0.08" r="0.8">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.22" />
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.03" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
     </radialGradient>
-    <linearGradient id="sh" x1="0" y1="0.6" x2="0" y2="1">
-      <stop offset="0" stop-color="#1b2370" stop-opacity="0"/>
-      <stop offset="1" stop-color="#1b2370" stop-opacity="0.30"/>
+
+    <!-- Rim light gradient -->
+    <linearGradient id="rim-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.32" />
+      <stop offset="40%" stop-color="#ffffff" stop-opacity="0.08" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.02" />
+    </linearGradient>
+
+    <!-- Filmstrip border & perforation gradient -->
+    <linearGradient id="film-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1e243d" />
+      <stop offset="100%" stop-color="#0f1220" />
+    </linearGradient>
+
+    <!-- Terminal glass gradient -->
+    <linearGradient id="term-glass" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0%" stop-color="#1e233d" stop-opacity="0.92" />
+      <stop offset="100%" stop-color="#111425" stop-opacity="0.94" />
+    </linearGradient>
+
+    <!-- Playhead electric gradient -->
+    <linearGradient id="play-grad" x1="0.1" y1="0.1" x2="0.9" y2="0.9">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="45%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#a855f7" />
+    </linearGradient>
+
+    <!-- Playhead specular sheen -->
+    <linearGradient id="play-sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.75" />
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+
+    <!-- Audio waveform neon gradient -->
+    <linearGradient id="sound-grad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#818cf8" />
+      <stop offset="100%" stop-color="#22d3ee" />
+    </linearGradient>
+
+    <!-- Timeline gradient -->
+    <linearGradient id="timeline-grad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="65%" stop-color="#818cf8" />
+      <stop offset="100%" stop-color="#c084fc" />
     </linearGradient>
   </defs>
 
-  <rect x="62" y="62" width="900" height="900" rx="216" fill="url(#g)"/>
-  <rect x="62" y="62" width="900" height="900" rx="216" fill="url(#hl)"/>
-  <rect x="62" y="62" width="900" height="900" rx="216" fill="url(#sh)"/>
+  <!-- ==================== BASE SQUIRCLE ==================== -->
+  <g filter="url(#canvas-shadow)">
+    <!-- Base squircle -->
+    <rect x="96" y="96" width="832" height="832" rx="192" fill="url(#bg-grad)" />
+    <!-- Top sheen overlay -->
+    <rect x="96" y="96" width="832" height="832" rx="192" fill="url(#top-highlight)" />
+    <!-- Inner stroke rim light -->
+    <rect x="97" y="97" width="830" height="830" rx="191" fill="none" stroke="url(#rim-grad)" stroke-width="2.5" />
+  </g>
 
-  <!-- play mark -->
-  <path d="M404 368 L664 512 L404 656 Z" fill="#ffffff"
-        stroke="#ffffff" stroke-width="56" stroke-linejoin="round"/>
+  <!-- Background decorative light beam -->
+  <path d="M220 96 L580 96 L420 928 L160 928 Z" fill="#6366f1" opacity="0.04" />
+  <circle cx="680" cy="520" r="280" fill="#6366f1" opacity="0.08" filter="blur(60px)" />
+  <circle cx="360" cy="460" r="220" fill="#06b6d4" opacity="0.06" filter="blur(50px)" />
 
-  <!-- voice -->
-  <g fill="#ffffff">
-    <rect x="332" y="712" width="34" height="52"  rx="17" opacity="0.72"/>
-    <rect x="394" y="694" width="34" height="88"  rx="17" opacity="0.88"/>
-    <rect x="456" y="712" width="34" height="52"  rx="17" opacity="0.72"/>
-    <rect x="518" y="686" width="34" height="104" rx="17" opacity="0.95"/>
-    <rect x="580" y="712" width="34" height="52"  rx="17" opacity="0.72"/>
-    <rect x="642" y="698" width="34" height="80"  rx="17" opacity="0.85"/>
+  <!-- ==================== LEFT FILMSTRIP TRACK ==================== -->
+  <g>
+    <!-- Filmstrip spine background -->
+    <rect x="156" y="166" width="108" height="692" rx="18" fill="url(#film-grad)" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1.5" />
+
+    <!-- Sprocket holes (classic rectangular 35mm film perforations with rounded corners) -->
+    <!-- 9 sprocket holes evenly spaced -->
+    <g fill="#0b0d18" stroke="#ffffff" stroke-opacity="0.10" stroke-width="1.5">
+      <rect x="176" y="186" width="68" height="46" rx="10" />
+      <rect x="176" y="260" width="68" height="46" rx="10" />
+      <rect x="176" y="334" width="68" height="46" rx="10" />
+      <rect x="176" y="408" width="68" height="46" rx="10" />
+      <rect x="176" y="482" width="68" height="46" rx="10" />
+      <rect x="176" y="556" width="68" height="46" rx="10" />
+      <rect x="176" y="630" width="68" height="46" rx="10" />
+      <rect x="176" y="704" width="68" height="46" rx="10" />
+      <rect x="176" y="778" width="68" height="46" rx="10" />
+    </g>
+
+    <!-- Optical soundtrack running down the inside edge (audio track on real motion picture film) -->
+    <g stroke="url(#sound-grad)" stroke-width="2.5" stroke-linecap="round" opacity="0.85">
+      <line x1="284" y1="185" x2="294" y2="185" />
+      <line x1="284" y1="205" x2="300" y2="205" />
+      <line x1="284" y1="225" x2="292" y2="225" />
+      <line x1="284" y1="245" x2="304" y2="245" />
+      <line x1="284" y1="265" x2="296" y2="265" />
+      <line x1="284" y1="285" x2="308" y2="285" />
+      <line x1="284" y1="305" x2="292" y2="305" />
+      <line x1="284" y1="325" x2="302" y2="325" />
+      <line x1="284" y1="345" x2="312" y2="345" />
+      <line x1="284" y1="365" x2="295" y2="365" />
+      <line x1="284" y1="385" x2="306" y2="385" />
+      <line x1="284" y1="405" x2="316" y2="405" />
+      <line x1="284" y1="425" x2="298" y2="425" />
+      <line x1="284" y1="445" x2="310" y2="445" />
+      <line x1="284" y1="465" x2="322" y2="465" />
+      <line x1="284" y1="485" x2="304" y2="485" />
+      <line x1="284" y1="505" x2="318" y2="505" />
+      <line x1="284" y1="525" x2="326" y2="525" />
+      <line x1="284" y1="545" x2="302" y2="545" />
+      <line x1="284" y1="565" x2="314" y2="565" />
+      <line x1="284" y1="585" x2="324" y2="585" />
+      <line x1="284" y1="605" x2="296" y2="605" />
+      <line x1="284" y1="625" x2="310" y2="625" />
+      <line x1="284" y1="645" x2="320" y2="645" />
+      <line x1="284" y1="665" x2="298" y2="665" />
+      <line x1="284" y1="685" x2="312" y2="685" />
+      <line x1="284" y1="705" x2="304" y2="705" />
+      <line x1="284" y1="725" x2="318" y2="725" />
+      <line x1="284" y1="745" x2="295" y2="745" />
+      <line x1="284" y1="765" x2="308" y2="765" />
+      <line x1="284" y1="785" x2="300" y2="785" />
+      <line x1="284" y1="805" x2="314" y2="805" />
+      <line x1="284" y1="825" x2="292" y2="825" />
+    </g>
+  </g>
+
+  <!-- ==================== MAIN TERMINAL WINDOW ==================== -->
+  <g filter="url(#panel-shadow)">
+    <!-- Terminal outer frame -->
+    <rect x="340" y="166" width="528" height="692" rx="24" fill="url(#term-glass)" stroke="#ffffff" stroke-opacity="0.14" stroke-width="2" />
+
+    <!-- Terminal titlebar -->
+    <path d="M340 190 C340 176.7 350.7 166 364 166 L844 166 C857.3 166 868 176.7 868 190 L868 236 L340 236 Z" fill="#15192c" fill-opacity="0.95" />
+    <line x1="340" y1="236" x2="868" y2="236" stroke="#ffffff" stroke-opacity="0.09" stroke-width="1.5" />
+
+    <!-- macOS traffic lights -->
+    <g>
+      <!-- Close (red) -->
+      <circle cx="376" cy="201" r="9" fill="#ff5f56" stroke="#e0443e" stroke-width="1.5" />
+      <circle cx="374" cy="198" r="3" fill="#ffffff" opacity="0.4" />
+      <!-- Minimize (yellow) -->
+      <circle cx="404" cy="201" r="9" fill="#ffbd2e" stroke="#dea123" stroke-width="1.5" />
+      <circle cx="402" cy="198" r="3" fill="#ffffff" opacity="0.4" />
+      <!-- Zoom (green) -->
+      <circle cx="432" cy="201" r="9" fill="#27c93f" stroke="#1aab29" stroke-width="1.5" />
+      <circle cx="430" cy="198" r="3" fill="#ffffff" opacity="0.4" />
+    </g>
+
+    <!-- Tab pill: "demo.reel" -->
+    <g>
+      <rect x="520" y="184" width="168" height="34" rx="9" fill="#212742" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1" />
+      <circle cx="538" cy="201" r="4.5" fill="#38bdf8" />
+      <!-- Tab text simulated as tiny clean mark -->
+      <rect x="552" y="197" width="76" height="8" rx="4" fill="#cbd5e1" opacity="0.85" />
+      <line x1="662" y1="196" x2="672" y2="206" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round" />
+      <line x1="672" y1="196" x2="662" y2="206" stroke="#94a3b8" stroke-width="1.5" stroke-linecap="round" />
+    </g>
+
+    <!-- Terminal Inner Editor Surface -->
+    <!-- Film frame border lines (subtle celluloid frame division) -->
+    <line x1="340" y1="490" x2="868" y2="490" stroke="#ffffff" stroke-opacity="0.06" stroke-dasharray="6,6" stroke-width="1.5" />
+
+    <!-- Code Line 1: import reel from "code" -->
+    <g transform="translate(378, 274)">
+      <!-- prompt / line numbers -->
+      <rect x="0" y="0" width="16" height="12" rx="4" fill="#64748b" opacity="0.4" />
+      <!-- keyword: purple -->
+      <rect x="32" y="0" width="72" height="13" rx="5" fill="#c084fc" opacity="0.95" />
+      <!-- identifier: sky blue -->
+      <rect x="114" y="0" width="94" height="13" rx="5" fill="#38bdf8" opacity="0.9" />
+      <!-- string / path: amber -->
+      <rect x="218" y="0" width="138" height="13" rx="5" fill="#fbbf24" opacity="0.8" />
+    </g>
+
+    <!-- Code Line 2: async function render() { -->
+    <g transform="translate(378, 308)">
+      <rect x="0" y="0" width="16" height="12" rx="4" fill="#64748b" opacity="0.4" />
+      <rect x="32" y="0" width="60" height="13" rx="5" fill="#c084fc" opacity="0.95" />
+      <rect x="100" y="0" width="90" height="13" rx="5" fill="#f472b6" opacity="0.9" />
+      <rect x="198" y="0" width="80" height="13" rx="5" fill="#38bdf8" opacity="0.9" />
+      <rect x="286" y="0" width="22" height="13" rx="5" fill="#cbd5e1" opacity="0.6" />
+    </g>
+
+    <!-- Code Line 3: indent: narration.speak("on-device") -->
+    <g transform="translate(378, 342)">
+      <rect x="0" y="0" width="16" height="12" rx="4" fill="#64748b" opacity="0.4" />
+      <rect x="58" y="0" width="96" height="13" rx="5" fill="#2dd4bf" opacity="0.9" />
+      <circle cx="162" cy="6" r="3" fill="#cbd5e1" opacity="0.7" />
+      <rect x="172" y="0" width="64" height="13" rx="5" fill="#818cf8" opacity="0.95" />
+      <rect x="244" y="0" width="130" height="13" rx="5" fill="#34d399" opacity="0.85" />
+    </g>
+
+    <!-- Code Line 4: indent: return reel.compose() -->
+    <g transform="translate(378, 376)">
+      <rect x="0" y="0" width="16" height="12" rx="4" fill="#64748b" opacity="0.4" />
+      <rect x="58" y="0" width="68" height="13" rx="5" fill="#c084fc" opacity="0.95" />
+      <rect x="134" y="0" width="144" height="13" rx="5" fill="#38bdf8" opacity="0.9" />
+    </g>
+
+    <!-- ==================== CENTERPIECE: GLOWING CINEMA PLAYHEAD ==================== -->
+    <!-- Large illuminated playhead nested in the terminal screen -->
+    <g transform="translate(604, 532)">
+      <!-- Glow backing -->
+      <path d="M -56 -74 L 84 0 L -56 74 Z" fill="url(#play-grad)" filter="url(#neon-glow)" opacity="0.8" />
+
+      <!-- Main play symbol with rounded bevel -->
+      <path d="M -52 -68 L 74 0 L -52 68 Z"
+            fill="url(#play-grad)"
+            stroke="#ffffff" stroke-opacity="0.6" stroke-width="6" stroke-linejoin="round" />
+
+      <!-- Specular reflection on play triangle -->
+      <path d="M -44 -56 L 54 0 L -44 0 Z" fill="url(#play-sheen)" opacity="0.5" />
+
+      <!-- Code brackets cut out / integrated into play head -->
+      <g stroke="#ffffff" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.95">
+        <!-- Left bracket < -->
+        <path d="M -22 -22 L -34 0 L -22 22" />
+        <!-- Right bracket > -->
+        <path d="M 6 -22 L 18 0 L 6 22" />
+        <!-- Slash / -->
+        <path d="M 2 -18 L -14 18" opacity="0.7" />
+      </g>
+    </g>
+
+    <!-- ==================== TIMELINE / SCRUBBER BAR ==================== -->
+    <g transform="translate(378, 706)">
+      <!-- Frame counter chip -->
+      <rect x="0" y="0" width="94" height="26" rx="7" fill="#1c223a" stroke="#ffffff" stroke-opacity="0.1" stroke-width="1" />
+      <circle cx="14" cy="13" r="4.5" fill="#ef4444" />
+      <!-- "REC" or timecode bars -->
+      <rect x="28" y="9" width="50" height="8" rx="4" fill="#94a3b8" opacity="0.8" />
+
+      <!-- Timeline track -->
+      <rect x="114" y="8" width="338" height="10" rx="5" fill="#0b0d18" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1" />
+      <!-- Timeline filled progress (62%) -->
+      <rect x="114" y="8" width="210" height="10" rx="5" fill="url(#timeline-grad)" />
+
+      <!-- Glowing scrubber thumb / playhead pin -->
+      <g transform="translate(324, 13)">
+        <circle cx="0" cy="0" r="10" fill="#ffffff" filter="drop-shadow(0 0 6px #818cf8)" />
+        <circle cx="0" cy="0" r="4.5" fill="#6366f1" />
+      </g>
+    </g>
+
+    <!-- Wordmark / Code prompt at bottom line -->
+    <g transform="translate(378, 762)">
+      <!-- Terminal prompt character ">" -->
+      <path d="M 0 0 L 10 9 L 0 18" fill="none" stroke="#38bdf8" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+      <!-- Blinking terminal block cursor -->
+      <rect x="24" y="0" width="12" height="18" rx="2" fill="#38bdf8" opacity="0.9" />
+      <!-- Command text simulated: "codereel render" -->
+      <rect x="46" y="4" width="84" height="10" rx="4" fill="#f1f5f9" opacity="0.9" />
+      <rect x="138" y="4" width="70" height="10" rx="4" fill="#38bdf8" opacity="0.85" />
+    </g>
   </g>
 </svg>
 </body>
