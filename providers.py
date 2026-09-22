@@ -316,10 +316,11 @@ def complete(p: Provider, system: str, user: str, *,
 
     try:
         resp = _open(p, _url(p, "/v1/chat/completions"), payload, "application/json", to)
-    except ProviderError:
-        if not json_mode:
+    except ProviderError as e:
+        # Some servers reject response_format outright — retry without it. Only on a
+        # 4xx: a timeout or an unreachable host would just burn the budget twice.
+        if not json_mode or not re.match(r"HTTP 4\d\d ", str(e)):
             raise
-        # Some servers reject response_format outright — retry without it.
         body.pop("response_format", None)
         resp = _open(p, _url(p, "/v1/chat/completions"),
                      json.dumps(body).encode(), "application/json", to)
@@ -329,10 +330,11 @@ def complete(p: Provider, system: str, user: str, *,
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             return _choice_text(data)
 
-        text, n = [], 0
+        text, n, other = [], 0, []
         for raw in resp:
             line = raw.decode("utf-8", errors="replace").strip()
             if not line.startswith("data:"):
+                other.append(line)
                 continue
             chunk = line[5:].strip()
             if chunk == "[DONE]":
@@ -347,6 +349,12 @@ def complete(p: Provider, system: str, user: str, *,
                 n += 1
                 if n % 6 == 0:
                     on_token("".join(text))
+        if not text and other:
+            # Not SSE after all — the server ignored `stream` and sent one body.
+            try:
+                return _choice_text(json.loads("".join(other)))
+            except json.JSONDecodeError:
+                pass
         return "".join(text)
 
 
@@ -471,48 +479,94 @@ def build_prompt(ctx: repocontext.RepoContext | None, n_scenes: int, angle: str,
 
 def extract_json(text: str) -> dict:
     """Models wrap JSON in prose or fences, or stop mid-object. Recover what we can."""
-    body = (text or "").strip()
-    if body.startswith("```"):
-        body = re.sub(r"^```[a-zA-Z]*\s*", "", body)
-        body = re.sub(r"\s*```$", "", body)
+    body = re.sub(r"<think>.*?</think>", "", text or "", flags=re.S | re.I)
+    body = re.sub(r"^.*?</think>", "", body, flags=re.S | re.I)   # unclosed opener
+    body = re.sub(r"```[a-zA-Z]*", "", body).strip()              # fences anywhere
     start = body.find("{")
     if start < 0:
         raise ProviderError(f"the model did not return JSON. It said: {body[:300]}")
+
     end = body.rfind("}")
-    if end > start:
-        try:
-            return json.loads(body[start:end + 1])
-        except json.JSONDecodeError:
-            pass
-    # Truncated output (hit max_tokens): close the open braces and brackets.
-    frag = body[start:]
-    frag = re.sub(r",\s*$", "", frag)
-    depth_c, depth_b, in_str, esc = 0, 0, False, False
-    for ch in frag:
-        if esc:
-            esc = False
+    clipped = body[start:end + 1] if end > start else ""
+    whole = body[start:]
+    # Every clean parse before any repaired one, and repair the WHOLE fragment
+    # first: when the model was cut off mid-object, clipping at the last brace
+    # would silently drop the scenes that came after it.
+    err: json.JSONDecodeError | None = None
+    for candidate in (clipped, whole, _repair(whole), _repair(clipped)):
+        if not candidate:
             continue
-        if ch == "\\":
-            esc = True
-        elif ch == '"':
-            in_str = not in_str
-        elif not in_str:
-            if ch == "{":
-                depth_c += 1
-            elif ch == "}":
-                depth_c -= 1
-            elif ch == "[":
-                depth_b += 1
-            elif ch == "]":
-                depth_b -= 1
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as e:
+            err = e
+    raise ProviderError(f"could not parse the model's JSON ({err}). "
+                        f"It began: {body[start:start + 240]}")
+
+
+_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def _repair(frag: str) -> str:
+    """One pass over a JSON fragment, fixing what local models get wrong.
+
+    Inside strings: raw control characters get escaped (a narration with a real
+    newline in it is the single most common way a local model's JSON fails to
+    parse). Outside them: // and /* */ comments and trailing commas are dropped.
+    At the end: whatever the model left open when it hit max_tokens is closed.
+    """
+    out: list[str] = []
+    stack: list[str] = []
+    in_str = esc = False
+    i, n = 0, len(frag)
+
+    while i < n:
+        ch = frag[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            elif ch in _ESCAPES:
+                out.append(_ESCAPES[ch])
+                i += 1
+                continue
+            elif ch < " ":
+                i += 1                      # any other control char: drop it
+                continue
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch == '"':
+            in_str = True
+        elif ch == "/" and frag[i + 1:i + 2] in ("/", "*"):
+            line = frag[i + 1] == "/"
+            stop = frag.find("\n" if line else "*/", i)
+            i = n if stop < 0 else stop + (1 if line else 2)
+            continue
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            while out and out[-1].isspace():
+                out.pop()
+            if out and out[-1] == ",":        # trailing comma, whatever sat between
+                out.pop()
+            if stack:
+                stack.pop()
+        out.append(ch)
+        i += 1
+
+    tail = "".join(out).rstrip()
     if in_str:
-        frag += '"'
-    frag += "]" * max(0, depth_b) + "}" * max(0, depth_c)
-    try:
-        return json.loads(frag)
-    except json.JSONDecodeError as e:
-        raise ProviderError(f"could not parse the model's JSON ({e}). "
-                            f"It began: {body[start:start + 240]}")
+        tail += '"'
+    else:
+        tail = tail.rstrip(",")
+    if tail.endswith(":"):                    # a key whose value never arrived
+        tail += '""'
+    return tail + "".join(reversed(stack))
 
 
 # ------------------------------------------------------------------ claude cli
@@ -593,7 +647,7 @@ def _analyze_openai(p: Provider, ctx: repocontext.RepoContext, prompt: str,
         seen[0] += 1
         on_step(min(0.30 + seen[0] * 0.006, 0.92), f"writing the script — {len(text)} chars")
 
-    raw = complete(p, SYSTEM_PROMPT, prompt, on_token=on_token)
+    raw = complete(p, SYSTEM_PROMPT, prompt, on_token=on_token, json_mode=True)
     if not raw.strip():
         raise ProviderError("the model returned an empty response")
     try:
@@ -602,7 +656,8 @@ def _analyze_openai(p: Provider, ctx: repocontext.RepoContext, prompt: str,
         on_step(0.93, "the JSON came back malformed — asking again")
         repair = (prompt + "\n\nYour previous reply could not be parsed as JSON. "
                   "Reply with the JSON object only. No prose, no code fence, no comments.")
-        raw2 = complete(p, SYSTEM_PROMPT, repair, max_tokens=p.max_tokens)
+        raw2 = complete(p, SYSTEM_PROMPT, repair, max_tokens=p.max_tokens,
+                        on_token=on_token, json_mode=True)
         return extract_json(raw2), 0.0
 
 
