@@ -392,7 +392,10 @@ BEATS = """Land these beats, in this order:
 3. SOLUTION — what this app is, and in one breath HOW it removes that pain.
 4. FEATURES — one scene per genuinely notable capability. Only real ones. If the app
    has nothing worth calling out, spend these scenes deepening the solution instead.
-5. CLOSE — the payoff of using it. What it costs, how to get it, or what changes after."""
+5. CLOSE — the payoff of using it. What it costs, how to get it, or what changes after.
+
+The hook is the `hook` field, NOT a scene: `scenes` starts at PROBLEM. Never say the
+same sentence twice — every line in the script must be new."""
 
 VISUAL_RULES = """Each scene also gets a visual — the thing on screen while the narration plays.
 Choose `visual` from exactly these, and use the guide:
@@ -712,11 +715,17 @@ def normalise(data: dict, repo: Path, ctx: repocontext.RepoContext | None,
             return ""
         return rel
 
+    # Beat 1 is the hook, so `scenes` should open at PROBLEM — but models routinely
+    # emit the hook line again as scene one. Hearing it twice reads as a bug.
+    hook = _clean(data.get("hook", ""))
+    said = {_said_key(hook)} - {""}
+
     scenes = []
     for sc in data.get("scenes", []) or []:
         narration = _clean(sc.get("narration", ""))
-        if not narration:
+        if not narration or _said_key(narration) in said:
             continue
+        said.add(_said_key(narration))
         kind = _clean(sc.get("visual", "")).lower()
         if kind not in VISUAL_KINDS:
             kind = ""
@@ -752,16 +761,19 @@ def normalise(data: dict, repo: Path, ctx: repocontext.RepoContext | None,
         scenes = enrich_visuals(ctx, scenes)
 
     close_raw = data.get("close") or {}
+    close_text = _clean(close_raw.get("narration", ""))
+    if _said_key(close_text) in said:
+        scenes = [sc for sc in scenes if _said_key(sc["text"]) != _said_key(close_text)]
     close = {
         "heading": _clean(close_raw.get("heading", "")) or "Get started",
-        "text": _clean(close_raw.get("narration", "")),
+        "text": close_text,
         "cta": _clean(close_raw.get("cta", ""))[:90],
     }
 
     return {
         "title": _clean(data.get("title", "")) or repo.name,
         "subtitle": _clean(data.get("audience", "")),
-        "hook": _clean(data.get("hook", "")),
+        "hook": hook,
         "logo": rel_path(data.get("logo", ""), known_images),
         "scenes": scenes,
         "close": close if close["text"] else None,
@@ -773,6 +785,11 @@ def normalise(data: dict, repo: Path, ctx: repocontext.RepoContext | None,
 
 def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").replace("\n", " ")).strip()
+
+
+def _said_key(text: str) -> str:
+    """What a line sounds like, for spotting the same sentence said twice."""
+    return re.sub(r"[^a-z0-9 ]+", "", (text or "").lower()).strip()
 
 
 def _swap_kind(kind: str, counts: dict[str, int], recent: list[str],
