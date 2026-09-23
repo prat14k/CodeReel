@@ -1,4 +1,7 @@
 """The shapes local models actually return. Run: python test_extract_json.py"""
+import pathlib
+import tempfile
+
 import providers
 from providers import extract_json as x
 
@@ -28,6 +31,19 @@ def main():
             raise AssertionError("expected ProviderError")
         except providers.ProviderError:
             pass
+    # the hook must not be said again as a scene, or as the close
+    with tempfile.TemporaryDirectory() as td:
+        r = providers.normalise({
+            "title": "T", "hook": "Your Mac's notch is wasted.",
+            "scenes": [{"narration": "Your Mac's notch is wasted!", "role": "Hook"},
+                       {"narration": "Every switch costs you flow.", "role": "Problem"},
+                       {"narration": "Grab it on GitHub.", "role": "Get it"}],
+            "close": {"narration": "Grab it on GitHub.", "cta": "github.com/x"},
+        }, pathlib.Path(td), None, providers.Provider())
+    assert [sc["text"] for sc in r["scenes"]] == ["Every switch costs you flow."], r["scenes"]
+    assert r["hook"] == "Your Mac's notch is wasted."
+    assert r["close"]["text"] == "Grab it on GitHub."
+
     print("ok")
 
 if __name__ == "__main__":
